@@ -80,6 +80,16 @@ unzip libfranka_${VERSION}_wheels.zip
 pip install numpy
 pip uninstall franky-control # If franky has been installed into your conda env 
 pip install --no-index --find-links=./dist franky-control
+pip install tyro tqdm pynput transforms3d opencv-python requests
+
+# SpaceMouse
+pip install hidapi pynput
+
+# RealSense camera
+pip install pyrealsense2
+
+# ik solver
+pip install sapien pytorch-kinematics==0.7.5
 ```
 
 
@@ -88,11 +98,47 @@ pip install --no-index --find-links=./dist franky-control
 See the files in [examples](./franky_control/examples/__init__.py)
 
 
-
 ## Data collection
 
 See the files in [data collection](./franky_control/data_collection/__init__.py)
 
+Full example with all parameters:
+
+```bash
+python -m franky_control.data_collection.data_collection_with_ik \
+    --task_name "assembly_task" \
+    --instruction "assemble the parts together" \
+    --robot_ip "172.16.0.2" \
+    --dataset_dir "demo" \
+    --min_action_steps 100 \
+    --max_action_steps 500 \
+    --episode_idx 0 \
+    --pos_scale 0.015 \
+    --rot_scale 0.020 \
+    --control_frequency 10.0 \
+    --verify_ik
+```
+
+Test data collection with hardware:
+
+```bash
+python -m franky_control.data_collection.data_collection_with_ik \
+    --task_name "demo" \
+    --instruction "demonstration task" \
+    --robot_ip "172.16.0.2"
+```
+
+Test data collection without hardware:
+
+```bash
+python -m franky_control.data_collection.data_collection_with_ik \
+    --task_name "test" \
+    --instruction "test" \
+    --robot_ip "172.16.0.2" \
+    --no_space_mouse \
+    --no_cameras \
+    --min_action_steps 10
+```
 
 ## Policy Deploy
 

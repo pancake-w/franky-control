@@ -1,0 +1,642 @@
+import os
+import sys
+import cv2
+import time
+import argparse
+import threading
+import numpy as np
+from datetime import datetime
+from pynput.keyboard import Listener, Key
+from franky_control.driver import RealsenseAPI
+
+
+'''
+    python camera_display.py --width 640 --height 480 --fps 30 --save-dir ./captures
+
+    ---
+    
+    from camera_display import CameraDisplay
+    display = CameraDisplay()
+    display.start()
+    custom_frames = your_image_data # shape: (N, H, W, C)
+    display.update(custom_frames)
+    display.stop()
+'''
+
+class CameraDisplay:
+    """
+    Real-time camera display system for multiple cameras.
+    Supports keyboard controls for saving frames and adjusting camera parameters.
+    """
+    
+    def __init__(self, width=640, height=480, fps=30, save_dir="./camera_captures"):
+        """
+        Initialize camera display system.
+        
+        Args:
+            width (int): Camera frame width
+            height (int): Camera frame height
+            fps (int): Camera FPS
+            save_dir (str): Directory to save captured frames
+        """
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.save_dir = save_dir
+        
+        # Create save directory
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Initialize camera system
+        try:
+            self.camera_system = RealsenseAPI(height=height, width=width, fps=fps)
+            self.num_cameras = self.camera_system.get_num_cameras()
+            print(f"Initialized {self.num_cameras} cameras")
+        except Exception as e:
+            print(f"Failed to initialize cameras: {e}")
+            sys.exit(1)
+        
+        # Display control
+        self.running = False
+        self.display_mode = 'rgb'  # 'rgb', 'depth', 'rgbd'
+        self.grid_cols = min(2, self.num_cameras)  # Max 2 columns
+        self.grid_rows = (self.num_cameras + self.grid_cols - 1) // self.grid_cols
+        
+        # Calculate display window size
+        self.display_width = self.width * self.grid_cols
+        self.display_height = self.height * self.grid_rows
+        
+        # Keyboard control state
+        self.save_frame_flag = False
+        self.quit_flag = False
+        self.exposure_adjustment = 0
+        self.gain_adjustment = 0
+        self.current_camera = 0  # For parameter adjustment
+        self.ctrl_pressed = False  # Track Ctrl key state
+        
+        # Threading
+        self.display_thread = None
+        self.keyboard_listener = None
+        
+        # Frame storage for external access
+        self.current_frames = None
+        self.frame_lock = threading.Lock()
+        
+        # Store initial camera parameters for recovery
+        self.initial_params = {}
+        self.save_initial_parameters()
+        
+        print("Camera Display initialized. Press 'h' for help.")
+
+    def save_initial_parameters(self):
+        """Save initial camera parameters for all cameras."""
+        try:
+            self.initial_params = {}
+            for i in range(self.num_cameras):
+                options = self.camera_system.get_camera_options(i)
+                self.initial_params[i] = {}
+                
+                # Save color sensor parameters
+                if 'color' in options:
+                    self.initial_params[i]['color'] = {}
+                    for param_name, param_info in options['color'].items():
+                        self.initial_params[i]['color'][param_name] = param_info['current']
+                
+                # Save depth sensor parameters
+                if 'depth' in options:
+                    self.initial_params[i]['depth'] = {}
+                    for param_name, param_info in options['depth'].items():
+                        self.initial_params[i]['depth'][param_name] = param_info['current']
+            
+            # Print initial auto settings for verification
+            for i, params in self.initial_params.items():
+                if 'color' in params:
+                    auto_exp = params['color'].get('enable_auto_exposure', 'Unknown')
+                    auto_wb = params['color'].get('enable_auto_white_balance', 'Unknown')
+                    print(f"Camera {i+1} initial settings: Auto Exposure={auto_exp}, Auto White Balance={auto_wb}")
+            
+            # Save initial parameters to file
+            self.save_initial_frames()
+            
+        except Exception as e:
+            print(f"Failed to save initial parameters: {e}")
+
+    def save_initial_frames(self):
+        """Save initial camera parameters as text file."""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Create initial parameters directory
+            initial_dir = os.path.join(self.save_dir, f"initial_params_{timestamp}")
+            os.makedirs(initial_dir, exist_ok=True)
+            
+            # Get camera parameters for all cameras
+            all_camera_params = self.camera_system.get_all_cameras_params()
+            
+            # Save parameters info as text file
+            params_file = os.path.join(initial_dir, "initial_camera_params.txt")
+            with open(params_file, 'w') as f:
+                f.write(f"Initial Parameters Saved Time: {timestamp}\n")
+                f.write(f"Resolution: {self.width}x{self.height}\n")
+                f.write(f"FPS: {self.fps}\n\n")
+                
+                for cam_name, params in all_camera_params.items():
+                    f.write(f"{cam_name} initial parameters:\n")
+                    for param_name, param_value in params.items():
+                        f.write(f"  {param_name}: {param_value}\n")
+                    f.write("\n")
+            
+            # Create parameter strings for each camera (like save_current_frames)
+            for i in range(self.num_cameras):
+                cam_params = all_camera_params.get(f'cam{i+1}', {})
+                
+                # Create parameter string for filename (including auto settings)
+                param_parts = []
+                if 'exp' in cam_params:
+                    param_parts.append(f"exp{cam_params['exp']}")
+                if 'gain' in cam_params:
+                    param_parts.append(f"g{cam_params['gain']}")
+                if 'laser' in cam_params:
+                    param_parts.append(f"l{cam_params['laser']}")
+                
+                # Add auto settings to filename
+                if 'auto_exp' in cam_params and cam_params['auto_exp']:
+                    param_parts.append("autoExp")
+                if 'auto_wb' in cam_params and cam_params['auto_wb']:
+                    param_parts.append("autoWB")
+                
+                param_string = "_".join(param_parts) if param_parts else "default"
+                
+                # Save parameter string to individual file for each camera
+                camera_param_file = os.path.join(initial_dir, f"initial_cam{i+1}_{param_string}.txt")
+                with open(camera_param_file, 'w') as f:
+                    f.write(f"Camera {i+1} Initial Parameters\n")
+                    f.write(f"Parameter String: {param_string}\n")
+                    f.write(f"Timestamp: {timestamp}\n\n")
+                    
+                    for param_name, param_value in cam_params.items():
+                        f.write(f"{param_name}: {param_value}\n")
+            
+            print(f"Initial camera parameters saved to {initial_dir}")
+            print(f"Detailed parameters saved to {params_file}")
+            
+        except Exception as e:
+            print(f"Failed to save initial parameters to file: {e}")
+
+    def restore_initial_parameters(self):
+        """Restore all cameras to their initial parameters."""
+        try:
+            for camera_idx, camera_params in self.initial_params.items():
+                # Restore color parameters
+                if 'color' in camera_params:
+                    color_params = camera_params['color']
+                    
+                    # First restore auto exposure setting
+                    if 'enable_auto_exposure' in color_params:
+                        auto_exp_value = color_params['enable_auto_exposure']
+                        if auto_exp_value:
+                            self.camera_system.set_exposure(camera_idx, None)  # Enable auto
+                        else:
+                            # Disable auto and set manual value
+                            if 'exposure' in color_params:
+                                self.camera_system.set_exposure(camera_idx, color_params['exposure'])
+                    
+                    # Then restore auto white balance setting
+                    if 'enable_auto_white_balance' in color_params:
+                        auto_wb_value = color_params['enable_auto_white_balance']
+                        if auto_wb_value:
+                            self.camera_system.set_white_balance(camera_idx, None)  # Enable auto
+                        else:
+                            # Disable auto and set manual value
+                            if 'white_balance' in color_params:
+                                self.camera_system.set_white_balance(camera_idx, color_params['white_balance'])
+                    
+                    # Restore gain
+                    if 'gain' in color_params:
+                        self.camera_system.set_gain(camera_idx, color_params['gain'])
+                
+                # Restore depth parameters
+                if 'depth' in camera_params:
+                    depth_params = camera_params['depth']
+                    if 'laser_power' in depth_params:
+                        self.camera_system.set_laser_power(camera_idx, depth_params['laser_power'])
+            
+            print("All cameras restored to initial parameters")
+            
+        except Exception as e:
+            print(f"Failed to restore initial parameters: {e}")
+
+    def create_grid_display(self, frames):
+        """
+        Create a grid display from multiple camera frames.
+        
+        Args:
+            frames (np.array): Array of shape (N, height, width, channels)
+            
+        Returns:
+            np.array: Combined grid image
+        """
+        if frames is None or len(frames) == 0:
+            return np.zeros((self.display_height, self.display_width, 3), dtype=np.uint8)
+        
+        # Handle different display modes
+        if self.display_mode == 'depth':
+            # Convert depth to displayable format
+            display_frames = []
+            for frame in frames:
+                if len(frame.shape) == 3 and frame.shape[2] > 3:
+                    # Extract depth channel from RGBD
+                    depth = frame[:, :, 3]
+                else:
+                    depth = frame if len(frame.shape) == 2 else frame[:, :, 0]
+                
+                # Normalize depth for display
+                depth_normalized = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX)
+                depth_colored = cv2.applyColorMap(depth_normalized.astype(np.uint8), cv2.COLORMAP_JET)
+                display_frames.append(depth_colored)
+            frames = np.array(display_frames)
+        
+        elif self.display_mode == 'rgb':
+            # Use RGB channels only
+            if frames.shape[-1] > 3:
+                frames = frames[:, :, :, :3]
+        
+        # Create grid
+        grid = np.zeros((self.display_height, self.display_width, 3), dtype=np.uint8)
+        
+        for i, frame in enumerate(frames):
+            if i >= self.num_cameras:
+                break
+                
+            row = i // self.grid_cols
+            col = i % self.grid_cols
+            
+            y_start = row * self.height
+            y_end = y_start + self.height
+            x_start = col * self.width
+            x_end = x_start + self.width
+            
+            # Ensure frame is in correct format
+            if len(frame.shape) == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            elif frame.shape[2] > 3:
+                frame = frame[:, :, :3]
+            
+            # Add camera label
+            frame_with_label = frame.copy()
+            cv2.putText(frame_with_label, f"Cam {i+1}", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+            # Highlight current camera for parameter adjustment
+            if i == self.current_camera:
+                cv2.rectangle(frame_with_label, (0, 0), (self.width-1, self.height-1), 
+                             (0, 255, 255), 3)
+            
+            grid[y_start:y_end, x_start:x_end] = frame_with_label
+        
+        return grid
+
+    def update(self, frames=None):
+        """
+        Update display with new frames.
+        
+        Args:
+            frames (np.array, optional): External frames to display. 
+                                       If None, captures from cameras.
+        """
+        if frames is None:
+            # Capture from cameras
+            if self.display_mode == 'rgb':
+                frames = self.camera_system.get_rgb()
+            elif self.display_mode == 'depth':
+                frames = self.camera_system.get_depth()
+            elif self.display_mode == 'rgbd':
+                frames = self.camera_system.get_rgbd()
+        
+        # Store frames for external access
+        with self.frame_lock:
+            self.current_frames = frames.copy() if frames is not None else None
+        
+        # Handle save frame request
+        if self.save_frame_flag:
+            self.save_current_frames(frames)
+            self.save_frame_flag = False
+        
+        return frames
+
+    def display_loop(self):
+        """Main display loop running in separate thread."""
+        cv2.namedWindow('Camera Display', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Camera Display', self.display_width, self.display_height)
+        
+        while self.running:
+            try:
+                frames = self.update()
+                
+                if frames is not None:
+                    grid_image = self.create_grid_display(frames)
+                    
+                    # Add status text
+                    status_text = f"Mode: {self.display_mode} | Current Cam: {self.current_camera+1} | Press 'h' for help"
+                    cv2.putText(grid_image, status_text, (10, grid_image.shape[0] - 20), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    
+                    cv2.imshow('Camera Display', cv2.cvtColor(grid_image, cv2.COLOR_RGB2BGR))
+                
+                # Check for window close or ESC key
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27 or self.quit_flag:  # ESC key
+                    break
+                    
+            except Exception as e:
+                print(f"Display error: {e}")
+                break
+            
+            time.sleep(1.0 / self.fps)
+        
+        cv2.destroyAllWindows()
+        self.running = False
+
+    def save_current_frames(self, frames):
+        """Save current frames to disk with camera parameters and organized by timestamp."""
+        if frames is None:
+            print("No frames to save")
+            return
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create timestamped directory
+        save_session_dir = os.path.join(self.save_dir, f"capture_{timestamp}")
+        os.makedirs(save_session_dir, exist_ok=True)
+        
+        # Get camera parameters for all cameras
+        all_camera_params = self.camera_system.get_all_cameras_params()
+        
+        # Save parameters info as text file
+        params_file = os.path.join(save_session_dir, "camera_params.txt")
+        with open(params_file, 'w') as f:
+            f.write(f"Capture Time: {timestamp}\n")
+            f.write(f"Display Mode: {self.display_mode}\n")
+            f.write(f"Resolution: {self.width}x{self.height}\n")
+            f.write(f"FPS: {self.fps}\n\n")
+            
+            for cam_name, params in all_camera_params.items():
+                f.write(f"{cam_name} parameters:\n")
+                for param_name, param_value in params.items():
+                    f.write(f"  {param_name}: {param_value}\n")
+                f.write("\n")
+        
+        for i, frame in enumerate(frames):
+            # Get camera parameters for filename
+            cam_params = all_camera_params.get(f'cam{i+1}', {})
+            
+            # Create parameter string for filename (including auto settings)
+            param_parts = []
+            if 'exp' in cam_params:
+                param_parts.append(f"exp{cam_params['exp']}")
+            if 'gain' in cam_params:
+                param_parts.append(f"g{cam_params['gain']}")
+            if 'laser' in cam_params and self.display_mode in ['depth', 'rgbd']:
+                param_parts.append(f"l{cam_params['laser']}")
+            
+            # Add auto settings to filename
+            if 'auto_exp' in cam_params and cam_params['auto_exp']:
+                param_parts.append("autoExp")
+            if 'auto_wb' in cam_params and cam_params['auto_wb']:
+                param_parts.append("autoWB")
+            
+            param_string = "_".join(param_parts) if param_parts else "default"
+            
+            if self.display_mode == 'depth':
+                # Save depth as 16-bit PNG
+                if len(frame.shape) == 3 and frame.shape[2] > 3:
+                    depth_data = frame[:, :, 3]
+                else:
+                    depth_data = frame if len(frame.shape) == 2 else frame[:, :, 0]
+                
+                filename = os.path.join(save_session_dir, f"depth_cam{i+1}_{param_string}.png")
+                cv2.imwrite(filename, depth_data.astype(np.uint16))
+            
+            elif self.display_mode == 'rgb':
+                # Save RGB as standard image
+                rgb_frame = frame[:, :, :3] if frame.shape[2] > 3 else frame
+                filename = os.path.join(save_session_dir, f"rgb_cam{i+1}_{param_string}.jpg")
+                cv2.imwrite(filename, cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR))
+            
+            elif self.display_mode == 'rgbd':
+                # Save both RGB and depth
+                rgb_frame = frame[:, :, :3]
+                depth_frame = frame[:, :, 3]
+                
+                rgb_filename = os.path.join(save_session_dir, f"rgb_cam{i+1}_{param_string}.jpg")
+                depth_filename = os.path.join(save_session_dir, f"depth_cam{i+1}_{param_string}.png")
+                
+                cv2.imwrite(rgb_filename, cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(depth_filename, depth_frame.astype(np.uint16))
+        
+        print(f"Saved frames from {len(frames)} cameras to {save_session_dir}")
+        print(f"Parameters saved to {params_file}")
+
+    def on_key_press(self, key):
+        """Handle key press events."""
+        try:
+            # Track Ctrl key state
+            if key == Key.ctrl_l or key == Key.ctrl_r:
+                self.ctrl_pressed = True
+                return
+            
+            if hasattr(key, 'char') and key.char:
+                if key.char == 's':
+                    self.save_frame_flag = True
+                    print("Saving current frames...")
+                
+                elif key.char == 'q':
+                    self.quit_flag = True
+                    print("Quitting...")
+                
+                elif key.char == 'm':
+                    # Cycle through display modes
+                    modes = ['rgb', 'depth', 'rgbd']
+                    current_idx = modes.index(self.display_mode)
+                    self.display_mode = modes[(current_idx + 1) % len(modes)]
+                    print(f"Switched to {self.display_mode} mode")
+                
+                elif key.char == 'c':
+                    # Cycle through cameras for parameter adjustment
+                    self.current_camera = (self.current_camera + 1) % self.num_cameras
+                    print(f"Selected camera {self.current_camera + 1} for parameter adjustment")
+                
+                elif key.char == 'h':
+                    self.print_help()
+                
+                elif key.char == 'r' and self.ctrl_pressed:
+                    # Restore initial parameters (Ctrl+R)
+                    self.restore_initial_parameters()
+                
+                # Protected parameter adjustment keys (require Ctrl)
+                elif key.char == '=' and self.ctrl_pressed:
+                    # Increase exposure
+                    try:
+                        options = self.camera_system.get_camera_options(self.current_camera)
+                        if 'color' in options and 'exposure' in options['color']:
+                            current = options['color']['exposure']['current']
+                            max_val = options['color']['exposure']['max']
+                            new_val = min(current + 10, max_val)
+                            self.camera_system.set_exposure(self.current_camera, new_val)
+                            print(f"Camera {self.current_camera+1}: Exposure increased to {new_val}")
+                    except Exception as e:
+                        print(f"Failed to adjust exposure: {e}")
+                
+                elif key.char == '-' and self.ctrl_pressed:
+                    # Decrease exposure
+                    try:
+                        options = self.camera_system.get_camera_options(self.current_camera)
+                        if 'color' in options and 'exposure' in options['color']:
+                            current = options['color']['exposure']['current']
+                            min_val = options['color']['exposure']['min']
+                            new_val = max(current - 10, min_val)
+                            self.camera_system.set_exposure(self.current_camera, new_val)
+                            print(f"Camera {self.current_camera+1}: Exposure decreased to {new_val}")
+                    except Exception as e:
+                        print(f"Failed to adjust exposure: {e}")
+                
+                elif key.char == 'a' and self.ctrl_pressed:
+                    # Auto exposure
+                    self.camera_system.set_exposure(self.current_camera, None)
+                    print(f"Camera {self.current_camera+1}: Auto exposure enabled")
+                
+                elif key.char == 'w' and self.ctrl_pressed:
+                    # Auto white balance
+                    self.camera_system.set_white_balance(self.current_camera, None)
+                    print(f"Camera {self.current_camera+1}: Auto white balance enabled")
+                
+                # Show warning if protected keys are pressed without Ctrl
+                elif key.char in ['=', '-', 'a', 'w'] and not self.ctrl_pressed:
+                    print(f"Hold Ctrl and press '{key.char}' to adjust camera parameters")
+        
+        except AttributeError:
+            # Handle special keys
+            if key == Key.esc:
+                self.quit_flag = True
+
+    def on_key_release(self, key):
+        """Handle key release events."""
+        # Track Ctrl key state
+        if key == Key.ctrl_l or key == Key.ctrl_r:
+            self.ctrl_pressed = False
+
+    def print_help(self):
+        """Print help information."""
+        help_text = """
+        Camera Display Controls:
+        
+        's' - Save current frames
+        'q' - Quit application
+        'm' - Cycle display modes (RGB -> Depth -> RGBD)
+        'c' - Cycle through cameras for parameter adjustment
+        'h' - Show this help
+        ESC - Quit application
+        
+        Camera Parameter Controls (Require Ctrl key):
+        Ctrl+'=' - Increase exposure for current camera
+        Ctrl+'-' - Decrease exposure for current camera
+        Ctrl+'a' - Enable auto exposure for current camera
+        Ctrl+'w' - Enable auto white balance for current camera
+        Ctrl+'r' - Restore all cameras to initial parameters
+        
+        Current settings:
+        - Mode: {mode}
+        - Current camera: {cam}
+        - Save directory: {save_dir}
+        - Ctrl protection: ENABLED (prevents accidental parameter changes)
+        """.format(
+            mode=self.display_mode,
+            cam=self.current_camera + 1,
+            save_dir=self.save_dir
+        )
+        print(help_text)
+
+    def start(self):
+        """Start the camera display system."""
+        if self.running:
+            print("Display already running")
+            return
+        
+        self.running = True
+        
+        # Start keyboard listener
+        self.keyboard_listener = Listener(
+            on_press=self.on_key_press,
+            on_release=self.on_key_release
+        )
+        self.keyboard_listener.start()
+        
+        # Start display thread
+        self.display_thread = threading.Thread(target=self.display_loop, daemon=True)
+        self.display_thread.start()
+        
+        print("Camera display started. Press 'h' for help.")
+
+    def stop(self):
+        """Stop the camera display system."""
+        self.running = False
+        self.quit_flag = True
+        
+        if self.display_thread and self.display_thread.is_alive():
+            self.display_thread.join()
+        
+        if self.keyboard_listener:
+            self.keyboard_listener.stop()
+        
+        self.camera_system.close()
+        print("Camera display stopped.")
+
+    def get_current_frames(self):
+        """Get the most recent frames (thread-safe)."""
+        with self.frame_lock:
+            return self.current_frames.copy() if self.current_frames is not None else None
+
+    def __enter__(self):
+        """Context manager entry."""
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.stop()
+
+
+def main():
+    """Main function for standalone usage."""
+    parser = argparse.ArgumentParser(description='Real-time camera display for RealSense cameras')
+    parser.add_argument('--width', type=int, default=640, help='Camera width (default: 640)')
+    parser.add_argument('--height', type=int, default=480, help='Camera height (default: 480)')
+    parser.add_argument('--fps', type=int, default=30, help='Camera FPS (default: 30)')
+    parser.add_argument('--save-dir', type=str, default='./camera_captures', 
+                       help='Directory to save captures (default: ./camera_captures)')
+    
+    args = parser.parse_args()
+    
+    try:
+        # Create and start display system
+        with CameraDisplay(
+            width=args.width,
+            height=args.height,
+            fps=args.fps,
+            save_dir=args.save_dir
+        ) as display:
+            
+            print("Camera display running. Press 'q' to quit.")
+            
+            # Keep main thread alive
+            while display.running:
+                time.sleep(0.1)
+                
+    except KeyboardInterrupt:
+        print("\nShutdown requested by user")
+    except Exception as e:
+        print(f"Error: {e}")
+
+
+if __name__ == "__main__":
+    main()
