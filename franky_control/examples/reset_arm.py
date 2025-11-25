@@ -1,0 +1,26 @@
+from argparse import ArgumentParser
+
+from franky import (
+    JointWaypointMotion,
+    JointWaypoint,
+    Robot,
+)
+
+if __name__ == "__main__":
+    parser = ArgumentParser()
+    parser.add_argument("--host", default="172.16.0.2", help="FCI IP of the robot")
+    args = parser.parse_args()
+
+    # Connect to the robot
+    robot = Robot(args.host)
+    robot.recover_from_errors()
+
+    # Reduce the acceleration and velocity dynamic
+    robot.relative_dynamics_factor = 0.1
+
+    joint_motion = JointWaypointMotion(
+        [
+            JointWaypoint([0.0, 0.0, 0.0, -2.2, 0.0, 2.2, 0.7]),
+        ]
+    )
+    robot.move(joint_motion)
