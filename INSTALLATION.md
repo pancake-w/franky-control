@@ -89,7 +89,7 @@ pip install hidapi pynput
 pip install pyrealsense2
 
 # ik solver
-pip install sapien pytorch-kinematics==0.7.5
+pip install pytorch_kinematics==0.7.5 sapien==3.0.0.b1
 ```
 
 
@@ -125,6 +125,7 @@ Test data collection with hardware:
 python -m franky_control.data_collection.data_collection_with_ik \
     --task_name "demo" \
     --instruction "demonstration task" \
+    --control_frequency 10.0 \
     --robot_ip "172.16.0.2"
 ```
 
@@ -135,8 +136,9 @@ python -m franky_control.data_collection.data_collection_with_ik \
     --task_name "test" \
     --instruction "test" \
     --robot_ip "172.16.0.2" \
-    --no_space_mouse \
-    --no_cameras \
+    --no_use_space_mouse \
+    --no_use_cameras \
+    --control_frequency 10.0 \
     --min_action_steps 10
 ```
 

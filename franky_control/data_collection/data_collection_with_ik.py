@@ -4,6 +4,11 @@ This implementation uses franky.Robot instead of FrankaArm (FrankaPy).
 """
 import os
 import sys
+
+# Remove ROS2 and OpenRobots paths to avoid interference with conda packages
+# This prevents ROS2's Pinocchio from conflicting with our pytorch_kinematics setup
+sys.path = [p for p in sys.path if not any(x in p for x in ['/opt/ros', 'franka_ros2_ws', '/opt/openrobots'])]
+
 import time
 import json
 import copy
@@ -20,8 +25,28 @@ from franky import Robot, JointWaypointMotion, JointWaypoint, ReferenceType
 # Import local drivers
 from franky_control.driver import SpaceMouse, RealsenseAPI, SPACEMOUSE_AVAILABLE, REALSENSE_AVAILABLE
 from franky_control.data_collection import DataCollector
-from franky_control.kinematics import PANDA_URDF_PATH
+from franky_control.kinematics import PANDA_URDF_PATH, ensure_assets_downloaded
 from franky_control.kinematics.panda_ik_solver import create_sim_aligned_ik_solver, SimPose
+
+
+@dataclass 
+class Args:
+    """Data collection script arguments."""
+    task_name: str  # Task name for the dataset
+    instruction: str  # Instruction for data collection
+    robot_ip: str = "172.16.0.2"  # Robot IP address
+    dataset_dir: str = "datasets"  # Directory to save dataset
+    min_action_steps: int = 200  # Minimum action_steps for data collection
+    max_action_steps: int = 1000  # Maximum action_steps for data collection  
+    episode_idx: int = -1  # Episode index to save data (-1 for auto-increment)
+    pos_scale: float = 0.015  # The scale of xyz action
+    rot_scale: float = 0.025  # The scale of rotation action
+    use_gpu_ik: bool = False  # Use GPU for IK solver
+    verify_ik: bool = False  # Verify IK solution with FK (for debugging)
+    control_frequency: float = 5.0  # Control frequency in Hz
+    use_space_mouse: bool = False  # Use SpaceMouse for control
+    use_cameras: bool = False  # Use RealSense cameras
+    use_gripper: bool = True  # Use Franka gripper
 
 
 class FrankyDataCollectionWithIK:
@@ -30,7 +55,7 @@ class FrankyDataCollectionWithIK:
     Uses SimAlignedPandaIKSolver - fully aligned with ManiSkill simulation kinematics.
     """
     
-    def __init__(self, args, robot: Robot, cameras=None, use_space_mouse: bool=False):
+    def __init__(self, args: Args, robot: Robot, cameras=None, use_space_mouse: bool=False):
         self.robot: Robot = robot
         self.cameras = cameras
 
@@ -89,9 +114,11 @@ class FrankyDataCollectionWithIK:
         device = "cuda" if self.args.use_gpu_ik else "cpu"
         
         print(f"[INFO] Initializing Simulation-Aligned Panda IK solver on device: {device}")
+        
+        # Use pytorch_kinematics instead (CPU or GPU)
         self.ik_solver = create_sim_aligned_ik_solver(
             urdf_path=urdf_path,
-            device=device
+            device=device,
         )
         print(f"[INFO] IK solver initialized successfully")
         print(f"[INFO] Solver mode: {self.ik_solver.alignment_mode}")
@@ -195,8 +222,6 @@ class FrankyDataCollectionWithIK:
 
                     # Process control signals
                     control_xyz = control[:3]
-                    if self.args.user_frame:
-                        control_xyz[:2] *= -1
 
                     control_euler = control[3:6][[1,0,2]] * np.array([-1,-1,1])
                     control_xyz = self._apply_control_data_clip_and_scale(control_xyz, 0.35)
@@ -256,7 +281,7 @@ class FrankyDataCollectionWithIK:
                             "euler_angle": np.array([mat2euler(self.command_rotation, 'sxyz')])[0],
                             "joints": target_joints.copy(),
                         },
-                        "gripper_width": control_gripper
+                        "gripper_control": control_gripper
                     }
 
                     # Collect data
@@ -290,6 +315,12 @@ class FrankyDataCollectionWithIK:
                                 print(f"[WARNING] Gripper control failed: {e}")
 
                     self.action_steps += 1
+                    
+                    # Log progress when no camera/space mouse (for non-interactive mode)
+                    if not self.use_space_mouse and not self.use_cameras:
+                        if self.action_steps % 10 == 0:
+                            print(f"[INFO] Step {self.action_steps}/{self.max_action_steps} | "
+                                  f"IK success: {ik_success_count}/{ik_success_count + ik_failure_count}")
                     
                     # Sleep to maintain control frequency
                     elapsed = time.time() - loop_start_time
@@ -383,27 +414,6 @@ class FrankyDataCollectionWithIK:
         return True
 
 
-@dataclass 
-class Args:
-    """Data collection script arguments."""
-    task_name: str  # Task name for the dataset
-    instruction: str  # Instruction for data collection
-    robot_ip: str = "172.16.0.2"  # Robot IP address
-    dataset_dir: str = "datasets"  # Directory to save dataset
-    min_action_steps: int = 200  # Minimum action_steps for data collection
-    max_action_steps: int = 1000  # Maximum action_steps for data collection  
-    episode_idx: int = -1  # Episode index to save data (-1 for auto-increment)
-    user_frame: bool = False  # Use user frame
-    pos_scale: float = 0.015  # The scale of xyz action
-    rot_scale: float = 0.025  # The scale of rotation action
-    use_gpu_ik: bool = False  # Use GPU for IK solver
-    verify_ik: bool = False  # Verify IK solution with FK (for debugging)
-    control_frequency: float = 5.0  # Control frequency in Hz
-    use_space_mouse: bool = True  # Use SpaceMouse for control
-    use_cameras: bool = True  # Use RealSense cameras
-    use_gripper: bool = True  # Use Franka gripper
-
-
 def main(args: Args):
     """Main function with tyro argument parsing.
     
@@ -411,7 +421,6 @@ def main(args: Args):
         args: Arguments from tyro CLI
     """
     # Ensure robot assets are downloaded
-    from franky_control.kinematics import ensure_assets_downloaded
     ensure_assets_downloaded("panda")
     
     # Initialize robot

@@ -192,7 +192,87 @@ class SimAlignedPandaIKSolver:
         
         print(f"[Pinocchio] Joint names: {joint_names[:7]}")
         print(f"[Pinocchio] End effector: {self.END_EFFECTOR_LINK} (index={self.end_link_idx})")
-        print(f"[Pinocchio] Active joints mask shape: {self.qmask.shape}")
+        print(f"[Pinocchio] Active joints mask (bool): {self.qmask}")
+    
+    # def _pinocchio_ik_direct(
+    #     self,
+    #     target_pose_sapien: 'sapien.Pose',
+    #     initial_qpos: Optional[np.ndarray] = None,
+    #     eps: float = 1e-4,
+    #     max_iterations: int = 100,
+    #     dt: float = 0.1,
+    #     damp: float = 1e-6,
+    # ) -> Tuple[np.ndarray, bool, float]:
+    #     """
+    #     Direct Pinocchio IK implementation bypassing SAPIEN wrapper.
+        
+    #     This fixes the SAPIEN 3.0 compatibility issue by directly calling Pinocchio.
+    #     Based on: https://gepettoweb.laas.fr/doc/stack-of-tasks/pinocchio/master/doxygen-html/md_doc_b-examples_i-inverse-kinematics.html
+    #     """
+    #     import pinocchio
+        
+    #     # Get Pinocchio model and data
+    #     model = self.pmodel.model
+    #     data = self.pmodel.data
+        
+    #     # Initial configuration
+    #     if initial_qpos is None:
+    #         q = pinocchio.neutral(model)
+    #     else:
+    #         q = np.ascontiguousarray(initial_qpos.copy(), dtype=np.float64)
+        
+    #     # Target frame
+    #     frame_id = self.end_link_idx
+        
+    #     # Convert SAPIEN pose to Pinocchio SE3
+    #     pos = np.ascontiguousarray(target_pose_sapien.p, dtype=np.float64)
+    #     quat = target_pose_sapien.q  # [w, x, y, z]
+        
+    #     # Convert quaternion to rotation matrix using transforms3d
+    #     from transforms3d.quaternions import quat2mat
+    #     rot_matrix = np.ascontiguousarray(quat2mat(quat), dtype=np.float64)
+        
+    #     oMdes = pinocchio.SE3(rot_matrix, pos)
+        
+    #     # CLIK algorithm
+    #     success = False
+    #     for i in range(max_iterations):
+    #         # Forward kinematics
+    #         pinocchio.framesForwardKinematics(model, data, q)
+            
+    #         # Get current frame pose
+    #         frame_id_pin = model.getFrameId(model.frames[frame_id].name)
+    #         oMi = data.oMf[frame_id_pin]
+            
+    #         # Compute error
+    #         iMd = oMi.actInv(oMdes)
+    #         err = pinocchio.log(iMd).vector
+            
+    #         # Check convergence
+    #         error_norm = np.linalg.norm(err)
+    #         if error_norm < eps:
+    #             success = True
+    #             break
+            
+    #         # Compute Jacobian
+    #         J = pinocchio.computeFrameJacobian(
+    #             model, data, q, frame_id_pin, pinocchio.ReferenceFrame.LOCAL
+    #         )
+            
+    #         # Apply active joint mask
+    #         J_masked = J[:, self.qmask]
+            
+    #         # Damped least squares
+    #         J_damped = J_masked.T @ J_masked + damp * np.eye(J_masked.shape[1])
+    #         v = -J_masked.T @ err
+    #         dq_masked = np.linalg.solve(J_damped, v)
+            
+    #         # Update q (only active joints)
+    #         dq = np.zeros(len(q))
+    #         dq[self.qmask] = dq_masked
+    #         q = pinocchio.integrate(model, q, dq * dt)
+        
+    #     return q, success, error_norm if 'error_norm' in locals() else np.inf
     
     def _setup_pytorch_kinematics(self):
         """Setup pytorch_kinematics solver"""
@@ -300,13 +380,13 @@ class SimAlignedPandaIKSolver:
                 if isinstance(initial_qpos, torch.Tensor):
                     q0_np = initial_qpos.cpu().numpy()
                 else:
-                    q0_np = np.array(initial_qpos)
+                    q0_np = np.array(initial_qpos, dtype=np.float64)
                 
                 if q0_np.ndim == 2:
                     q0_np = q0_np[0]  # Pinocchio only supports single pose
                 
                 # Pad to full length (7 arm + 2 gripper = 9)
-                full_q0 = np.zeros(9)
+                full_q0 = np.zeros(9, dtype=np.float64)
                 full_q0[:min(len(q0_np), 7)] = q0_np[:min(len(q0_np), 7)]
             else:
                 full_q0 = None
@@ -321,14 +401,14 @@ class SimAlignedPandaIKSolver:
                 self.end_link_idx,
                 target_pose_sapien,
                 initial_qpos=full_q0,
-                active_qmask=self.qmask,
-                max_iterations=100,
+                active_qmask=self.qmask,  # numpy bool array
+                max_iterations=self.max_iterations,
             )
             
             if success:
-                # Return only first 7 joints
-                result_joints = result[:7]
-                return torch.tensor([result_joints], dtype=torch.float32, device=self.device)
+                # Return only first 7 joints (convert to numpy array first to avoid warning)
+                result_joints = np.array([result[:7]], dtype=np.float32)
+                return torch.from_numpy(result_joints).to(device=self.device)
             else:
                 return None
         else:
@@ -394,6 +474,7 @@ class SimAlignedPandaIKSolver:
 def create_sim_aligned_ik_solver(
     urdf_path: str,
     device: str = "cpu",
+    use_pinocchio: bool = None,
 ) -> SimAlignedPandaIKSolver:
     """
     Create IK solver aligned with ManiSkill simulation (simplified interface)
@@ -401,8 +482,11 @@ def create_sim_aligned_ik_solver(
     Args:
         urdf_path: Path to URDF file
         device: "cpu" or "cuda" (recommend "cpu" for real robot)
+        use_pinocchio: Force use/not use Pinocchio (None=auto, False=pytorch_kinematics)
+                       Note: SAPIEN 3.0 has Pinocchio compatibility issues, 
+                       recommend use_pinocchio=False
     
     Returns:
         SimAlignedPandaIKSolver instance
     """
-    return SimAlignedPandaIKSolver(urdf_path=urdf_path, device=device)
+    return SimAlignedPandaIKSolver(urdf_path=urdf_path, device=device, use_pinocchio=use_pinocchio)

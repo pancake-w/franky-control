@@ -73,11 +73,11 @@ class DataCollector:
                     "abs_position": [],
                     "abs_euler": [],
                     "abs_joints": [],  # Added for IK-based control
-                    "gripper_width": [],
+                    "gripper_control": [],
                 },
                 "joint": {
                     "position": [],
-                    "gripper_width": [],
+                    "gripper_control": [],
                 },
             },
             "observation": {
@@ -233,7 +233,7 @@ class DataCollector:
             save_action: Dictionary containing action information with keys:
                 - "delta": {"position", "orientation", "euler_angle"}
                 - "abs": {"position", "euler_angle", "joints"}
-                - "gripper_width"
+                - "gripper_control"
         """
         action = self.data_dict['action']["end_effector"]
         action["delta_position"].append(save_action["delta"]["position"])
@@ -246,7 +246,7 @@ class DataCollector:
         if "joints" in save_action["abs"]:
             action["abs_joints"].append(save_action["abs"]["joints"])
         
-        action["gripper_width"].append(save_action["gripper_width"])
+        action["gripper_control"].append(save_action["gripper_control"])
     
     def update_data_dict(
         self,
