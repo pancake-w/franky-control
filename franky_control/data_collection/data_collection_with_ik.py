@@ -55,14 +55,14 @@ class FrankyDataCollectionWithIK:
     Uses SimAlignedPandaIKSolver - fully aligned with ManiSkill simulation kinematics.
     """
     
-    def __init__(self, args: Args, robot: Robot, cameras=None, use_space_mouse: bool=False):
+    def __init__(self, args: Args, robot: Robot, cameras=None, ):
         self.robot: Robot = robot
         self.cameras = cameras
 
         self.args = args
         self.data_collector = DataCollector(robot, cameras)
-        self.use_space_mouse = use_space_mouse
-        if use_space_mouse:
+        self.use_space_mouse = args.use_space_mouse
+        if self.use_space_mouse:
             if not SPACEMOUSE_AVAILABLE:
                 print("[WARNING] SpaceMouse not available, using dummy control")
                 self.space_mouse = None
@@ -70,7 +70,7 @@ class FrankyDataCollectionWithIK:
                 self.space_mouse = SpaceMouse(vendor_id=0x256f, product_id=0xc635)
         else:
             self.space_mouse = None
-
+        
         self.episode_idx = 0
         self.action_steps = 0
         self.instruction = args.instruction
@@ -292,7 +292,7 @@ class FrankyDataCollectionWithIK:
                     )
 
                     # Send joint command to robot using asynchronous waypoint control
-                    waypoint = JointWaypoint(target_joints.tolist())
+                    waypoint = JointWaypoint(target_joints.tolist(), relative_dynamics_factor=0.2)
                     waypoint_motion = JointWaypointMotion([waypoint])
                     self.robot.move(waypoint_motion, asynchronous=True)
                     
@@ -306,10 +306,10 @@ class FrankyDataCollectionWithIK:
                             try:
                                 if control_gripper < 0.5:
                                     # Close/grasp
-                                    self.gripper_controller.grasp(force=30.0)
+                                    self.gripper_controller.grasp(force=50.0, epsilon_inner=0.08, epsilon_outer=0.08, async_call=True)
                                 else:
                                     # Open to specified width
-                                    self.gripper_controller.move(gripper_width, speed=0.12)
+                                    self.gripper_controller.move(gripper_width, speed=0.12, async_call=True)
                                 self.last_gripper_state = control_gripper
                             except Exception as e:
                                 print(f"[WARNING] Gripper control failed: {e}")
@@ -317,9 +317,9 @@ class FrankyDataCollectionWithIK:
                     self.action_steps += 1
                     
                     # Log progress when no camera/space mouse (for non-interactive mode)
-                    if not self.use_space_mouse and not self.use_cameras:
+                    if not self.use_space_mouse and not self.args.use_cameras:
                         if self.action_steps % 10 == 0:
-                            print(f"[INFO] Step {self.action_steps}/{self.max_action_steps} | "
+                            print(f"[INFO] Step {self.action_steps}/{self.args.max_action_steps} | "
                                   f"IK success: {ik_success_count}/{ik_success_count + ik_failure_count}")
                     
                     # Sleep to maintain control frequency
@@ -334,6 +334,16 @@ class FrankyDataCollectionWithIK:
                     print(f"[ERROR] An error occurred during data collection: {e}")
                     import traceback
                     traceback.print_exc()
+                    
+                    # Try to recover from errors (e.g., Reflex mode after collision)
+                    try:
+                        print("[INFO] Attempting to recover from error...")
+                        self.robot.recover_from_errors()
+                        time.sleep(0.1)  # Wait for recovery
+                        print("[INFO] Error recovery successful")
+                    except Exception as recover_error:
+                        print(f"[WARNING] Error recovery failed: {recover_error}")
+                    
                     time.sleep(self.control_time_step)
                     self.ee_pose_init()
                     continue
@@ -439,22 +449,20 @@ def main(args: Args):
                 print(f"[WARNING] Failed to initialize cameras: {e}")
         else:
             print("[WARNING] RealSense not available, data collection without cameras")
-    
+
+    # Move to home position
+    print("[INFO] Moving to home position...")
+    home_motion = JointWaypointMotion([
+        JointWaypoint([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], relative_dynamics_factor=0.1)
+    ])
+    robot.move(home_motion)
+
     # Create data collection instance
     collection = FrankyDataCollectionWithIK(
         args, 
         robot, 
         cameras, 
-        use_space_mouse=args.use_space_mouse
     )
-    
-    # Move to home position
-    print("[INFO] Moving to home position...")
-    robot.relative_dynamics_factor = 0.1
-    home_motion = JointWaypointMotion([
-        JointWaypoint([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
-    ])
-    robot.move(home_motion)
     
     # Initialize pose and start collection
     collection.ee_pose_init()

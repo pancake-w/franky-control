@@ -29,6 +29,8 @@ Linux [PCNAME] 5.15.0-1056-realtime #63-Ubuntu SMP PREEMPT_RT ...
 
 If it does not say PREEMPT_RT, you are not currently running a real-time kernel.
 
+`sudo apt install zstd`
+
 There are multiple ways of installing a real-time kernel.
 You can [build it from source](https://frankarobotics.github.io/docs/libfranka/docs/installation_linux.html#setting-up-the-real-time-kernel) or, if you are using Ubuntu, it can be [enabled through Ubuntu Pro](https://ubuntu.com/real-time).
 
@@ -83,12 +85,13 @@ pip install --no-index --find-links=./dist franky-control
 pip install tyro tqdm pynput transforms3d opencv-python requests
 
 # SpaceMouse
-pip install hidapi pynput
+pip install hidapi pynput 
 
 # RealSense camera
-pip install pyrealsense2
+pip install pyrealsense2 imageio
 
 # ik solver
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://mirrors.tuna.tsinghua.edu.cn/pytorch/whl/cpu
 pip install pytorch_kinematics==0.7.5 sapien==3.0.0.b1
 ```
 
@@ -97,6 +100,13 @@ pip install pytorch_kinematics==0.7.5 sapien==3.0.0.b1
 
 See the files in [examples](./franky_control/examples/__init__.py)
 
+```python
+
+python -m franky_control.examples.realtime_pose_control
+
+python -m franky_control.examples.reset_arm
+
+```
 
 ## Data collection
 
@@ -136,8 +146,8 @@ python -m franky_control.data_collection.data_collection_with_ik \
     --task_name "test" \
     --instruction "test" \
     --robot_ip "172.16.0.2" \
-    --no_use_space_mouse \
     --no_use_cameras \
+    --use_space_mouse \
     --control_frequency 10.0 \
     --min_action_steps 10
 ```
