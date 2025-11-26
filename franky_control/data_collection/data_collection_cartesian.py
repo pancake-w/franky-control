@@ -1,12 +1,11 @@
 """
-Real robot data collection script using IK to convert EE pose commands to joint commands.
-This implementation uses franky.Robot instead of FrankaArm (FrankaPy).
+Real robot data collection script using direct Cartesian pose control.
+This implementation uses franky.Robot with CartesianMotion (no IK solver needed).
 """
 import os
 import sys
 
 # Remove ROS2 and OpenRobots paths to avoid interference with conda packages
-# This prevents ROS2's Pinocchio from conflicting with our pytorch_kinematics setup
 sys.path = [p for p in sys.path if not any(x in p for x in ['/opt/ros', 'franka_ros2_ws', '/opt/openrobots'])]
 
 import time
@@ -17,16 +16,13 @@ import tyro
 from dataclasses import dataclass
 from transforms3d.euler import euler2quat, euler2mat, mat2euler
 from transforms3d.quaternions import mat2quat, quat2mat
-import torch
 
 # Import franky robot control
-from franky import Robot, JointWaypointMotion, JointWaypoint, ReferenceType
+from franky import Robot, CartesianMotion, Affine, ReferenceType, JointWaypointMotion, JointWaypoint, ImpedanceMotion
 
 # Import local drivers
 from franky_control.driver import SpaceMouse, RealsenseAPI, SPACEMOUSE_AVAILABLE, REALSENSE_AVAILABLE
 from franky_control.data_collection import DataCollector
-from franky_control.kinematics import PANDA_URDF_PATH, ensure_assets_downloaded
-from franky_control.kinematics.panda_ik_solver import create_sim_aligned_ik_solver, SimPose
 
 
 @dataclass 
@@ -41,23 +37,20 @@ class Args:
     episode_idx: int = -1  # Episode index to save data (-1 for auto-increment)
     pos_scale: float = 0.015  # The scale of xyz action
     rot_scale: float = 0.025  # The scale of rotation action
-    use_gpu_ik: bool = False  # Use GPU for IK solver
-    verify_ik: bool = False  # Verify IK solution with FK (for debugging)
     control_frequency: float = 5.0  # Control frequency in Hz
-    use_joint_filter: bool = False  # Use low-pass filter for joint commands
-    filter_alpha: float = 0.4  # Low-pass filter smoothing factor (0-1, lower=smoother)
     use_space_mouse: bool = False  # Use SpaceMouse for control
     use_cameras: bool = False  # Use RealSense cameras
     use_gripper: bool = True  # Use Franka gripper
 
 
-class FrankyDataCollectionWithIK:
-    """Data collection class using IK with franky.Robot.
+class FrankyDataCollectionCartesian:
+    """Data collection class using direct Cartesian pose control.
     
-    Uses SimAlignedPandaIKSolver - fully aligned with ManiSkill simulation kinematics.
+    Uses franky's CartesianMotion with Affine transforms for direct end-effector control.
+    No IK solver needed - franky handles the inverse kinematics internally.
     """
     
-    def __init__(self, args: Args, robot: Robot, cameras=None, ):
+    def __init__(self, args: Args, robot: Robot, cameras=None):
         self.robot: Robot = robot
         self.cameras = cameras
 
@@ -104,66 +97,6 @@ class FrankyDataCollectionWithIK:
 
         self.pos_scale = args.pos_scale
         self.rot_scale = args.rot_scale
-        
-        # Joint filtering parameters
-        self.use_joint_filter = args.use_joint_filter
-        self.filter_alpha = args.filter_alpha
-        self.filtered_joints = None  # Will be initialized after first pose init
-
-        # Initialize IK solver
-        self._init_ik_solver()
-
-    def _init_ik_solver(self):
-        """Initialize the simulation-aligned Panda IK solver."""
-        urdf_path = PANDA_URDF_PATH
-        
-        # Use CPU for IK solver (more stable for real-time control)
-        device = "cuda" if self.args.use_gpu_ik else "cpu"
-        
-        print(f"[INFO] Initializing Simulation-Aligned Panda IK solver on device: {device}")
-        
-        # Use pytorch_kinematics instead (CPU or GPU)
-        self.ik_solver = create_sim_aligned_ik_solver(
-            urdf_path=urdf_path,
-            device=device,
-        )
-        print(f"[INFO] IK solver initialized successfully")
-        print(f"[INFO] Solver mode: {self.ik_solver.alignment_mode}")
-        print(f"[INFO] Max iterations: {self.ik_solver.max_iterations}")
-
-    def _compute_ik_for_pose(self, position, rotation_matrix, initial_joints=None):
-        """
-        Compute IK for given pose using the simulation-aligned Panda IK solver.
-        
-        Args:
-            position: np.array of shape (3,) - xyz position
-            rotation_matrix: np.array of shape (3,3) - rotation matrix
-            initial_joints: np.array of shape (7,) - initial joint positions (warm start)
-            
-        Returns:
-            np.array of shape (7,) - joint positions, or None if IK fails
-        """
-        # Create target pose using SimPose (aligned with ManiSkill)
-        # Convert rotation matrix to quaternion (wxyz format) using transforms3d
-        quat_wxyz = mat2quat(rotation_matrix)  # transforms3d returns [w,x,y,z]
-        
-        target_pose = SimPose.from_pq(
-            position=position,
-            quaternion=quat_wxyz,
-            device=self.ik_solver.device
-        )
-        
-        # Solve IK with warm start
-        ik_solution = self.ik_solver.compute_ik(
-            target_pose,
-            initial_qpos=initial_joints  # Warm start for better convergence
-        )
-        
-        if ik_solution is not None:
-            # Return numpy array (remove batch dimension)
-            return ik_solution[0].cpu().numpy()
-        else:
-            return None
 
     def ee_pose_init(self):
         """Initialize the end-effector pose."""
@@ -171,22 +104,16 @@ class FrankyDataCollectionWithIK:
         current_pose = self.robot.current_pose
         
         # Extract position and rotation from franky's RobotPose
-        # current_pose is RobotPose, which has end_effector_pose (Affine)
         ee_affine = current_pose.end_effector_pose
         self.init_xyz = np.array(ee_affine.translation)
-        self.init_rotation = np.array(ee_affine.matrix[:3, :3])  # Extract 3x3 rotation from 4x4 matrix
+        self.init_rotation = np.array(ee_affine.matrix[:3, :3])  # Extract 3x3 rotation
         
         self.command_xyz = self.init_xyz.copy()
         self.command_rotation = self.init_rotation.copy()
         
-        # Get initial joint positions for IK warm start
+        # Get initial joint positions for logging
         joint_state = self.robot.current_joint_state
         self.current_joints = np.array(joint_state.position)
-        
-        # Initialize filtered joints with current position
-        if self.use_joint_filter and self.filtered_joints is None:
-            self.filtered_joints = self.current_joints.copy()
-            print(f"[INFO] Joint filter enabled with alpha={self.filter_alpha}")
         
         print(f"[INFO] Initial joints: {self.current_joints}")
         print(f"[INFO] Initial EE position: {self.init_xyz}")
@@ -205,13 +132,9 @@ class FrankyDataCollectionWithIK:
         return np.clip(scaled_tensor, -1.0, 1.0)
 
     def collect_data(self):
-        """Main data collection loop using IK-based joint control."""
-        input("Press enter to start collection with IK-based control")
-        print("[INFO] Starting data collection with IK solver...")
-        
-        # Statistics
-        ik_success_count = 0
-        ik_failure_count = 0
+        """Main data collection loop using Cartesian pose control."""
+        input("Press enter to start collection with Cartesian control")
+        print("[INFO] Starting data collection with direct Cartesian control...")
         
         try:
             while True:
@@ -234,7 +157,6 @@ class FrankyDataCollectionWithIK:
 
                     # Process control signals
                     control_xyz = control[:3]
-
                     control_euler = control[3:6][[1,0,2]] * np.array([-1,-1,1])
                     control_xyz = self._apply_control_data_clip_and_scale(control_xyz, 0.35)
                     control_euler = self._apply_control_data_clip_and_scale(control_euler, 0.35)
@@ -250,46 +172,18 @@ class FrankyDataCollectionWithIK:
 
                     timestamp = time.time() - self.init_time
 
-                    # Compute IK to get target joint positions
-                    target_joints = self._compute_ik_for_pose(
-                        self.command_xyz,
-                        self.command_rotation,
-                        initial_joints=self.current_joints
-                    )
-
-                    if target_joints is None:
-                        print(f"[WARNING] IK failed at step {self.action_steps}, skipping this command")
-                        ik_failure_count += 1
-                        time.sleep(self.control_time_step)
-                        continue
+                    # Create target pose as Affine transform
+                    # Build 4x4 transformation matrix
+                    target_matrix = np.eye(4)
+                    target_matrix[:3, :3] = self.command_rotation
+                    target_matrix[:3, 3] = self.command_xyz
                     
-                    ik_success_count += 1
+                    # Create Affine object from matrix
+                    target_affine = Affine(target_matrix)
                     
-                    # Apply low-pass filter to joint commands for smoothness
-                    if self.use_joint_filter:
-                        # Exponential moving average filter: y[n] = α * x[n] + (1-α) * y[n-1]
-                        # Lower alpha = smoother but slower response
-                        self.filtered_joints = (self.filter_alpha * target_joints + 
-                                               (1 - self.filter_alpha) * self.filtered_joints)
-                        filtered_target_joints = self.filtered_joints.copy()
-                    else:
-                        filtered_target_joints = target_joints.copy()
-                    
-                    # Verify IK solution (optional, for debugging)
-                    if self.args.verify_ik and self.action_steps % 10 == 0:
-                        quat_wxyz = mat2quat(self.command_rotation)
-                        target_pose_for_verify = SimPose.from_pq(
-                            position=self.command_xyz,
-                            quaternion=quat_wxyz,
-                            device=self.ik_solver.device
-                        )
-                        pos_error, ori_error = self.ik_solver.verify_ik_solution(
-                            torch.tensor([target_joints], device=self.ik_solver.device),
-                            target_pose_for_verify
-                        )
-                        print(f"[DEBUG] Step {self.action_steps}: "
-                              f"pos_err={pos_error*1000:.3f}mm, "
-                              f"ori_err={np.rad2deg(ori_error):.3f}deg")
+                    # Get current joint positions for logging
+                    joint_state = self.robot.current_joint_state
+                    current_joints = np.array(joint_state.position)
 
                     # Save action data
                     save_action = {
@@ -301,7 +195,7 @@ class FrankyDataCollectionWithIK:
                         "abs": {
                             "position": copy.deepcopy(self.command_xyz),
                             "euler_angle": np.array([mat2euler(self.command_rotation, 'sxyz')])[0],
-                            "joints": target_joints.copy(),
+                            "joints": current_joints.copy(),
                         },
                         "gripper_control": control_gripper
                     }
@@ -313,13 +207,13 @@ class FrankyDataCollectionWithIK:
                         timestamp=timestamp,
                     )
 
-                    # Send joint command to robot using asynchronous waypoint control
-                    waypoint = JointWaypoint(filtered_target_joints.tolist(), relative_dynamics_factor=0.2)
-                    waypoint_motion = JointWaypointMotion([waypoint])
-                    self.robot.move(waypoint_motion, asynchronous=True)
-                    
-                    # Update current joints for next IK warm start (use unfiltered for IK)
-                    self.current_joints = target_joints
+                    # Send Cartesian command to robot (asynchronous for real-time control)
+                    cartesian_motion = CartesianMotion(
+                        target_affine, 
+                        ReferenceType.Absolute,
+                        relative_dynamics_factor=0.1,
+                    )
+                    self.robot.move(cartesian_motion, asynchronous=True)
 
                     # Control gripper (if available)
                     if hasattr(self, 'gripper_controller') and self.gripper_controller is not None:
@@ -328,21 +222,29 @@ class FrankyDataCollectionWithIK:
                             try:
                                 if control_gripper < 0.5:
                                     # Close/grasp
-                                    self.gripper_controller.grasp(force=50.0, epsilon_inner=0.08, epsilon_outer=0.08, async_call=True)
+                                    self.gripper_controller.grasp(
+                                        force=50.0, 
+                                        epsilon_inner=0.08, 
+                                        epsilon_outer=0.08, 
+                                        async_call=True
+                                    )
                                 else:
                                     # Open to specified width
-                                    self.gripper_controller.move(gripper_width, speed=0.12, async_call=True)
+                                    self.gripper_controller.move(
+                                        gripper_width, 
+                                        speed=0.12, 
+                                        async_call=True
+                                    )
                                 self.last_gripper_state = control_gripper
                             except Exception as e:
                                 print(f"[WARNING] Gripper control failed: {e}")
 
                     self.action_steps += 1
                     
-                    # Log progress when no camera/space mouse (for non-interactive mode)
+                    # Log progress
                     if not self.use_space_mouse and not self.args.use_cameras:
                         if self.action_steps % 10 == 0:
-                            print(f"[INFO] Step {self.action_steps}/{self.args.max_action_steps} | "
-                                  f"IK success: {ik_success_count}/{ik_success_count + ik_failure_count}")
+                            print(f"[INFO] Step {self.action_steps}/{self.args.max_action_steps}")
                     
                     # Sleep to maintain control frequency
                     elapsed = time.time() - loop_start_time
@@ -361,7 +263,7 @@ class FrankyDataCollectionWithIK:
                     try:
                         print("[INFO] Attempting to recover from error...")
                         self.robot.recover_from_errors()
-                        time.sleep(0.1)  # Wait for recovery
+                        time.sleep(0.5)  # Wait for recovery
                         print("[INFO] Error recovery successful")
                     except Exception as recover_error:
                         print(f"[WARNING] Error recovery failed: {recover_error}")
@@ -370,15 +272,6 @@ class FrankyDataCollectionWithIK:
                     self.ee_pose_init()
                     continue
         finally:
-            # Print statistics
-            total_ik = ik_success_count + ik_failure_count
-            if total_ik > 0:
-                success_rate = 100.0 * ik_success_count / total_ik
-                print(f"\n[INFO] IK Statistics:")
-                print(f"  Success: {ik_success_count}")
-                print(f"  Failure: {ik_failure_count}")
-                print(f"  Success Rate: {success_rate:.2f}%")
-            
             # Clean up resources
             if self.space_mouse is not None:
                 self.space_mouse.close()
@@ -432,10 +325,7 @@ class FrankyDataCollectionWithIK:
             "episode_idx": self.episode_idx,
             "action_steps": self.action_steps,
             "instruction": self.instruction,
-            "control_type": "ik_based_joint_control",
-            "ik_solver": "SimAlignedPandaIKSolver",
-            "ik_solver_mode": self.ik_solver.alignment_mode,
-            "ik_max_iterations": self.ik_solver.max_iterations,
+            "control_type": "cartesian_pose_control",
             "robot_interface": "franky",
         }
         with open(metadata_path, "w") as f:
@@ -452,15 +342,11 @@ def main(args: Args):
     Args:
         args: Arguments from tyro CLI
     """
-    # Ensure robot assets are downloaded
-    ensure_assets_downloaded("panda")
-    
     # Initialize robot
     print(f"[INFO] Connecting to robot at {args.robot_ip}")
     robot = Robot(args.robot_ip)
     robot.recover_from_errors()
-    # robot.set_joint_impedance([500.0, 1000.0, 500.0, 1000.0, 500.0, 500.0, 500.0])
-
+    
     # Initialize cameras
     cameras = None
     if args.use_cameras:
@@ -481,7 +367,7 @@ def main(args: Args):
     robot.move(home_motion)
 
     # Create data collection instance
-    collection = FrankyDataCollectionWithIK(
+    collection = FrankyDataCollectionCartesian(
         args, 
         robot, 
         cameras, 

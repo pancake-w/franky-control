@@ -123,8 +123,9 @@ python -m franky_control.data_collection.data_collection_with_ik \
     --min_action_steps 100 \
     --max_action_steps 500 \
     --episode_idx 0 \
-    --pos_scale 0.015 \
-    --rot_scale 0.020 \
+    --pos_scale 0.01 \
+    --rot_scale 0.02 \
+    --use_space_mouse \
     --control_frequency 10.0 \
     --verify_ik
 ```

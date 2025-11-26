@@ -365,28 +365,28 @@ class SpaceMouse:
             try:
                 d = self.device.read(13)
                 if d is not None and self._enabled:
-                    if self.product_id == 50741:
-                        ## logic for older spacemouse model
+                    if self.product_id == 50741 or self.product_id == 0xc635:
+                        ## logic for older spacemouse model (including SpaceMouse Compact)
 
-                        if d[0] == 1:  ## readings from 6-DoF sensor
+                        if d[0] == 1:  ## readings from 6-DoF sensor (position)
                             self.y = convert(d[1], d[2])
                             self.x = convert(d[3], d[4])
                             self.z = convert(d[5], d[6]) * -1.0
 
-                        elif d[0] == 2:
-
+                        elif d[0] == 2:  ## readings from 6-DoF sensor (rotation)
                             self.roll = convert(d[1], d[2])
                             self.pitch = convert(d[3], d[4])
                             self.yaw = convert(d[5], d[6])
 
-                            self._control = [
-                                self.x,
-                                self.y,
-                                self.z,
-                                self.roll,
-                                self.pitch,
-                                self.yaw,
-                            ]
+                        # Update control after each packet
+                        self._control = [
+                            self.x,
+                            self.y,
+                            self.z,
+                            self.roll,
+                            self.pitch,
+                            self.yaw,
+                        ]
                     else:
                         ## default logic for all other spacemouse models
 
