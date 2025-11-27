@@ -119,15 +119,15 @@ python -m franky_control.data_collection.data_collection_with_ik \
     --task_name "assembly_task" \
     --instruction "assemble the parts together" \
     --robot_ip "172.16.0.2" \
-    --dataset_dir "demo" \
     --min_action_steps 100 \
     --max_action_steps 500 \
     --episode_idx 0 \
-    --pos_scale 0.01 \
-    --rot_scale 0.02 \
+    --pos_scale 0.015 \
+    --rot_scale 0.025 \
     --use_space_mouse \
     --control_frequency 10.0 \
     --verify_ik
+    # --use_joint_filter
 ```
 
 Test data collection with hardware:
@@ -138,6 +138,23 @@ python -m franky_control.data_collection.data_collection_with_ik \
     --instruction "demonstration task" \
     --control_frequency 10.0 \
     --robot_ip "172.16.0.2"
+```
+
+```bash
+python -m franky_control.data_collection.data_collection_cartesian \
+    --task_name "test" \
+    --instruction "test task" \
+    --robot_ip "172.16.0.2" \
+    --control_frequency 10.0 \
+    --use_space_mouse
+
+
+python -m franky_control.data_collection.data_collection_cartesian_relative \
+    --task_name "test" \
+    --instruction "test task" \
+    --robot_ip "172.16.0.2" \
+    --control_frequency 10.0 \
+    --use_space_mouse
 ```
 
 Test data collection without hardware:
@@ -152,6 +169,7 @@ python -m franky_control.data_collection.data_collection_with_ik \
     --control_frequency 10.0 \
     --min_action_steps 10
 ```
+
 
 ## Policy Deploy
 

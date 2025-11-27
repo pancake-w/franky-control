@@ -20,7 +20,7 @@ from transforms3d.quaternions import mat2quat, quat2mat
 import torch
 
 # Import franky robot control
-from franky import Robot, JointWaypointMotion, JointWaypoint, ReferenceType
+from franky import Robot, JointWaypointMotion, JointWaypoint, ReferenceType, RelativeDynamicsFactor
 
 # Import local drivers
 from franky_control.driver import SpaceMouse, RealsenseAPI, SPACEMOUSE_AVAILABLE, REALSENSE_AVAILABLE
@@ -283,8 +283,10 @@ class FrankyDataCollectionWithIK:
                             quaternion=quat_wxyz,
                             device=self.ik_solver.device
                         )
+                        # Convert numpy array to tensor efficiently
+                        target_joints_tensor = torch.from_numpy(target_joints).unsqueeze(0).to(self.ik_solver.device)
                         pos_error, ori_error = self.ik_solver.verify_ik_solution(
-                            torch.tensor([target_joints], device=self.ik_solver.device),
+                            target_joints_tensor,
                             target_pose_for_verify
                         )
                         print(f"[DEBUG] Step {self.action_steps}: "
@@ -314,8 +316,8 @@ class FrankyDataCollectionWithIK:
                     )
 
                     # Send joint command to robot using asynchronous waypoint control
-                    waypoint = JointWaypoint(filtered_target_joints.tolist(), relative_dynamics_factor=0.2)
-                    waypoint_motion = JointWaypointMotion([waypoint])
+                    waypoint = JointWaypoint(filtered_target_joints.tolist(),)
+                    waypoint_motion = JointWaypointMotion([waypoint], relative_dynamics_factor=RelativeDynamicsFactor(velocity=0.18, acceleration=0.13, jerk=0.11))
                     self.robot.move(waypoint_motion, asynchronous=True)
                     
                     # Update current joints for next IK warm start (use unfiltered for IK)
@@ -476,8 +478,8 @@ def main(args: Args):
     # Move to home position
     print("[INFO] Moving to home position...")
     home_motion = JointWaypointMotion([
-        JointWaypoint([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], relative_dynamics_factor=0.1)
-    ])
+        JointWaypoint([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785],)
+    ], relative_dynamics_factor=RelativeDynamicsFactor(velocity=0.18, acceleration=0.13, jerk=0.11))
     robot.move(home_motion)
 
     # Create data collection instance

@@ -19,9 +19,9 @@ from transforms3d.quaternions import mat2quat, quat2mat
 
 # Import franky robot control
 from franky import (
-    Robot, CartesianMotion, Affine, ReferenceType, 
+    Robot, Affine, ReferenceType, CartesianMotion,
     JointWaypointMotion, JointWaypoint, 
-    CartesianWaypointMotion, CartesianWaypoint, RelativeDynamicsFactor, CartesianState, Twist, Duration
+    RelativeDynamicsFactor
 )
 
 # Import local drivers
@@ -102,6 +102,11 @@ class FrankyDataCollectionCartesian:
 
         self.pos_scale = args.pos_scale
         self.rot_scale = args.rot_scale
+        
+        # Track previous pose for velocity calculation
+        self.prev_xyz = None
+        self.prev_rotation = None
+        self.prev_time = None
 
     def ee_pose_init(self):
         """Initialize the end-effector pose."""
@@ -115,6 +120,11 @@ class FrankyDataCollectionCartesian:
         
         self.command_xyz = self.init_xyz.copy()
         self.command_rotation = self.init_rotation.copy()
+        
+        # Initialize previous pose for velocity calculation
+        self.prev_xyz = self.init_xyz.copy()
+        self.prev_rotation = self.init_rotation.copy()
+        self.prev_time = time.time()
         
         # Get initial joint positions for logging
         joint_state = self.robot.current_joint_state
@@ -171,7 +181,7 @@ class FrankyDataCollectionCartesian:
                     delta_euler = control_euler * self.rot_scale
                     delta_rotation = euler2mat(delta_euler[0], delta_euler[1], delta_euler[2], 'sxyz')
                     
-                    # Update command pose
+                    # Update command pose (for logging/saving only)
                     self.command_xyz += delta_xyz
                     self.command_rotation = np.matmul(self.command_rotation, delta_rotation)
 
@@ -212,32 +222,32 @@ class FrankyDataCollectionCartesian:
                         timestamp=timestamp,
                     )
 
-                    # Send Cartesian command to robot (asynchronous for real-time control)
-                    if self.action_steps % 20 == 0:
-                        print(f"[DEBUG] Sending cartesian motion: pos={self.command_xyz}")
+                    # Send Cartesian position command using RELATIVE motion
+                    # Key insight: Send motion commands EVERY iteration for smooth real-time control
+                    # Use very small dynamics factors (like examples: 0.05) for 20Hz updates
+                    if self.action_steps % 50 == 0:
+                        print(f"[DEBUG] Target pos: {self.command_xyz}, delta: {delta_xyz}")
                     
-                    cartesian_waypoint_motion = CartesianWaypointMotion(
-                        [
-                            CartesianWaypoint(
-                                CartesianState(
-                                    pose=target_affine,
-                                    # velocity=Twist(next_vel[:3], next_vel[3:]),
-                                )
-                            ),
-                            # CartesianWaypoint(
-                            #     CartesianState(
-                            #         pose=Affine(position_after_next_position, orn_after_next_orn),
-                            #     ),
-                            #     minimum_time=Duration(int(1/self.control_frequency * 1000))
-                            # ),
-                        ],
+                    # Create RELATIVE motion (delta from current position)
+                    # Build 4x4 transformation matrix for delta
+                    delta_matrix = np.eye(4)
+                    delta_matrix[:3, :3] = delta_rotation
+                    delta_matrix[:3, 3] = delta_xyz
+                    
+                    # Create Affine from matrix
+                    delta_affine = Affine(delta_matrix)
+                    
+                    cartesian_motion = CartesianMotion(
+                        delta_affine,
+                        ReferenceType.Relative,  # Relative to current position
                         relative_dynamics_factor=RelativeDynamicsFactor(
-                            velocity=0.16, 
-                            acceleration=0.10, 
-                            jerk=0.10,
-                        )
+                            velocity=0.4,   # Very small for real-time control (like examples)
+                            acceleration=0.1,
+                            jerk=0.1,
+                        ),
+                        return_when_finished=False  # Don't wait for motion to finish
                     )
-                    self.robot.move(cartesian_waypoint_motion, asynchronous=True)
+                    self.robot.move(cartesian_motion, asynchronous=True)
 
                     # Control gripper (if available)
                     if hasattr(self, 'gripper_controller') and self.gripper_controller is not None:
@@ -390,7 +400,7 @@ def main(args: Args):
                       relative_dynamics_factor=RelativeDynamicsFactor(velocity=0.18, acceleration=0.13, jerk=0.11))
     ])
     robot.move(home_motion)
-
+    
     # Set global relative dynamics factor for real-time control
     # This is multiplied with the motion-specific factor for smooth real-time updates
     robot.relative_dynamics_factor = RelativeDynamicsFactor(0.5)
@@ -413,7 +423,7 @@ def main(args: Args):
         # Upper force thresholds
         [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]
     )
-
+    
     # Create data collection instance
     collection = FrankyDataCollectionCartesian(
         args, 
