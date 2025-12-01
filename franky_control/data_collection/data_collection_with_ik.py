@@ -25,6 +25,7 @@ from franky import Robot, JointWaypointMotion, JointWaypoint, ReferenceType, Rel
 # Import local drivers
 from franky_control.driver import SpaceMouse, RealsenseAPI, SPACEMOUSE_AVAILABLE, REALSENSE_AVAILABLE
 from franky_control.data_collection import DataCollector
+from franky_control.robot.constants import FC
 from franky_control.kinematics import PANDA_URDF_PATH, ensure_assets_downloaded
 from franky_control.kinematics.panda_ik_solver import create_sim_aligned_ik_solver, SimPose
 
@@ -34,16 +35,16 @@ class Args:
     """Data collection script arguments."""
     task_name: str  # Task name for the dataset
     instruction: str  # Instruction for data collection
-    robot_ip: str = "172.16.0.2"  # Robot IP address
-    dataset_dir: str = "datasets"  # Directory to save dataset
-    min_action_steps: int = 200  # Minimum action_steps for data collection
-    max_action_steps: int = 1000  # Maximum action_steps for data collection  
+    robot_ip: str = FC.ROBOT_IP  # Robot IP address
+    dataset_dir: str = FC.DEFAULT_DATASET_DIR  # Directory to save dataset
+    min_action_steps: int = FC.MIN_EPISODE_STEPS  # Minimum action_steps for data collection
+    max_action_steps: int = FC.MAX_EPISODE_STEPS  # Maximum action_steps for data collection  
     episode_idx: int = -1  # Episode index to save data (-1 for auto-increment)
-    pos_scale: float = 0.015  # The scale of xyz action
-    rot_scale: float = 0.025  # The scale of rotation action
+    pos_scale: float = FC.DEFAULT_POS_SCALE  # The scale of xyz action
+    rot_scale: float = FC.DEFAULT_ROT_SCALE  # The scale of rotation action
     use_gpu_ik: bool = False  # Use GPU for IK solver
     verify_ik: bool = False  # Verify IK solution with FK (for debugging)
-    control_frequency: float = 5.0  # Control frequency in Hz
+    control_frequency: float = FC.VLA_CONTROL_FREQUENCY  # Control frequency in Hz
     use_joint_filter: bool = False  # Use low-pass filter for joint commands
     filter_alpha: float = 0.4  # Low-pass filter smoothing factor (0-1, lower=smoother)
     use_space_mouse: bool = False  # Use SpaceMouse for control
@@ -69,7 +70,10 @@ class FrankyDataCollectionWithIK:
                 print("[WARNING] SpaceMouse not available, using dummy control")
                 self.space_mouse = None
             else:
-                self.space_mouse = SpaceMouse(vendor_id=0x256f, product_id=0xc635)
+                self.space_mouse = SpaceMouse(
+                    vendor_id=FC.SPACEMOUSE_VENDOR_ID, 
+                    product_id=FC.SPACEMOUSE_PRODUCT_ID
+                )
         else:
             self.space_mouse = None
         
@@ -236,8 +240,8 @@ class FrankyDataCollectionWithIK:
                     control_xyz = control[:3]
 
                     control_euler = control[3:6][[1,0,2]] * np.array([-1,-1,1])
-                    control_xyz = self._apply_control_data_clip_and_scale(control_xyz, 0.35)
-                    control_euler = self._apply_control_data_clip_and_scale(control_euler, 0.35)
+                    control_xyz = self._apply_control_data_clip_and_scale(control_xyz, FC.SPACEMOUSE_DEADZONE)
+                    control_euler = self._apply_control_data_clip_and_scale(control_euler, FC.SPACEMOUSE_DEADZONE)
 
                     # Compute delta pose
                     delta_xyz = control_xyz * self.pos_scale
@@ -468,7 +472,7 @@ def main(args: Args):
     if args.use_cameras:
         if REALSENSE_AVAILABLE:
             try:
-                cameras = RealsenseAPI()
+                cameras = RealsenseAPI(FC.CAMERA_HEIGHT, FC.CAMERA_WIDTH, FC.CAMERA_FPS)
                 print(f"[INFO] Initialized {cameras.get_num_cameras()} camera(s)")
             except Exception as e:
                 print(f"[WARNING] Failed to initialize cameras: {e}")
@@ -478,8 +482,12 @@ def main(args: Args):
     # Move to home position
     print("[INFO] Moving to home position...")
     home_motion = JointWaypointMotion([
-        JointWaypoint([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785],)
-    ], relative_dynamics_factor=RelativeDynamicsFactor(velocity=0.18, acceleration=0.13, jerk=0.11))
+        JointWaypoint(list(FC.HOME_JOINTS))
+    ], relative_dynamics_factor=RelativeDynamicsFactor(
+        velocity=FC.DEFAULT_VELOCITY_FACTOR, 
+        acceleration=FC.DEFAULT_ACCELERATION_FACTOR, 
+        jerk=FC.DEFAULT_JERK_FACTOR
+    ))
     robot.move(home_motion)
 
     # Create data collection instance

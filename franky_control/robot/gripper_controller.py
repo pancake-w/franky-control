@@ -5,7 +5,7 @@ This module provides a simple interface for controlling the Franka gripper.
 
 from typing import Optional
 from franky import Gripper
-
+from franky_control.robot.constants import FC
 
 class GripperController:
     """
@@ -24,7 +24,7 @@ class GripperController:
         """
         self.gripper = Gripper(robot_ip)
         self._is_homed = False
-        self._max_width = 0.08  # Default max width [m]
+        self._max_width = FC.GRIPPER_MAX_WIDTH  # Default max width [m]
         
     def home(self, async_call: bool = False) -> bool:
         """
@@ -49,7 +49,7 @@ class GripperController:
             try:
                 # Note: franky.Gripper may not have max_width property
                 # This is a placeholder
-                self._max_width = 0.08  # Panda gripper max width
+                self._max_width = FC.GRIPPER_MAX_WIDTH  # Panda gripper max width
             except:
                 pass
             print("[Gripper] Homing successful")
@@ -201,7 +201,7 @@ if __name__ == "__main__":
     import time
     
     # Initialize gripper
-    gripper = GripperController("172.16.0.2")
+    gripper = GripperController(FC.ROBOT_IP)
     
     # Home gripper
     if not gripper.home():

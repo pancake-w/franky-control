@@ -27,6 +27,7 @@ from franky import (
 # Import local drivers
 from franky_control.driver import SpaceMouse, RealsenseAPI, SPACEMOUSE_AVAILABLE, REALSENSE_AVAILABLE
 from franky_control.data_collection import DataCollector
+from franky_control.robot.constants import FC
 
 
 @dataclass 
@@ -34,14 +35,14 @@ class Args:
     """Data collection script arguments."""
     task_name: str  # Task name for the dataset
     instruction: str  # Instruction for data collection
-    robot_ip: str = "172.16.0.2"  # Robot IP address
-    dataset_dir: str = "datasets"  # Directory to save dataset
-    min_action_steps: int = 200  # Minimum action_steps for data collection
-    max_action_steps: int = 500  # Maximum action_steps for data collection  
+    robot_ip: str = FC.ROBOT_IP  # Robot IP address
+    dataset_dir: str = FC.DEFAULT_DATASET_DIR  # Directory to save dataset
+    min_action_steps: int = FC.MIN_EPISODE_STEPS  # Minimum action_steps for data collection
+    max_action_steps: int = FC.MAX_EPISODE_STEPS  # Maximum action_steps for data collection  
     episode_idx: int = -1  # Episode index to save data (-1 for auto-increment)
-    pos_scale: float = 0.015  # The scale of xyz action
-    rot_scale: float = 0.025  # The scale of rotation action
-    control_frequency: float = 10.0  # Control frequency in Hz
+    pos_scale: float = FC.DEFAULT_POS_SCALE  # The scale of xyz action
+    rot_scale: float = FC.DEFAULT_ROT_SCALE  # The scale of rotation action
+    control_frequency: float = FC.DEFAULT_CONTROL_FREQUENCY  # Control frequency in Hz
     use_space_mouse: bool = True  # Use SpaceMouse for control
     use_cameras: bool = False  # Use RealSense cameras
     use_gripper: bool = True  # Use Franka gripper
@@ -67,7 +68,10 @@ class FrankyDataCollectionCartesian:
                 print("[WARNING] SpaceMouse not available, using dummy control")
                 self.space_mouse = None
             else:
-                self.space_mouse = SpaceMouse(vendor_id=0x256f, product_id=0xc635)
+                self.space_mouse = SpaceMouse(
+                    vendor_id=FC.SPACEMOUSE_VENDOR_ID, 
+                    product_id=FC.SPACEMOUSE_PRODUCT_ID
+                )
         else:
             self.space_mouse = None
         
@@ -163,8 +167,8 @@ class FrankyDataCollectionCartesian:
                     # Process control signals
                     control_xyz = control[:3]
                     control_euler = control[3:6][[1,0,2]] * np.array([-1,-1,1])
-                    control_xyz = self._apply_control_data_clip_and_scale(control_xyz, 0.35)
-                    control_euler = self._apply_control_data_clip_and_scale(control_euler, 0.35)
+                    control_xyz = self._apply_control_data_clip_and_scale(control_xyz, FC.SPACEMOUSE_DEADZONE)
+                    control_euler = self._apply_control_data_clip_and_scale(control_euler, FC.SPACEMOUSE_DEADZONE)
 
                     # Compute delta pose
                     delta_xyz = control_xyz * self.pos_scale
@@ -376,7 +380,7 @@ def main(args: Args):
     if args.use_cameras:
         if REALSENSE_AVAILABLE:
             try:
-                cameras = RealsenseAPI()
+                cameras = RealsenseAPI(FC.CAMERA_HEIGHT, FC.CAMERA_WIDTH, FC.CAMERA_FPS)
                 print(f"[INFO] Initialized {cameras.get_num_cameras()} camera(s)")
             except Exception as e:
                 print(f"[WARNING] Failed to initialize cameras: {e}")
@@ -386,32 +390,31 @@ def main(args: Args):
     # Move to home position
     print("[INFO] Moving to home position...")
     home_motion = JointWaypointMotion([
-        JointWaypoint([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785], 
-                      relative_dynamics_factor=RelativeDynamicsFactor(velocity=0.18, acceleration=0.13, jerk=0.11))
+        JointWaypoint(list(FC.HOME_JOINTS), 
+                      relative_dynamics_factor=RelativeDynamicsFactor(
+                          velocity=FC.DEFAULT_VELOCITY_FACTOR, 
+                          acceleration=FC.DEFAULT_ACCELERATION_FACTOR, 
+                          jerk=FC.DEFAULT_JERK_FACTOR))
     ])
     robot.move(home_motion)
 
     # Set global relative dynamics factor for real-time control
     # This is multiplied with the motion-specific factor for smooth real-time updates
-    robot.relative_dynamics_factor = RelativeDynamicsFactor(0.5)
+    robot.relative_dynamics_factor = RelativeDynamicsFactor(FC.DEFAULT_GLOBAL_DYNAMICS_FACTOR)
 
     # For Cartesian POSITION control, use CARTESIAN impedance
     # Lower stiffness = more compliant/smoother, less vibration
     # Higher stiffness = more precise but potentially more vibration
     # Translational stiffness [x, y, z]: 10-3000 N/m
     # Rotational stiffness [rx, ry, rz]: 1-300 Nm/rad
-    robot.set_cartesian_impedance([600.0, 600.0, 600.0, 60.0, 60.0, 60.0])
+    robot.set_cartesian_impedance(list(FC.DEFAULT_CARTESIAN_IMPEDANCES))
 
     # Set collision behavior to reasonable values
     robot.set_collision_behavior(
-        # Lower torque thresholds (contact detection)
-        [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0],
-        # Upper torque thresholds (collision detection)
-        [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0],
-        # Lower force thresholds
-        [30.0, 30.0, 30.0, 25.0, 25.0, 25.0],
-        # Upper force thresholds
-        [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]
+        list(FC.COLLISION_TORQUE_LOWER),
+        list(FC.COLLISION_TORQUE_UPPER),
+        list(FC.COLLISION_FORCE_LOWER),
+        list(FC.COLLISION_FORCE_UPPER)
     )
 
     # Create data collection instance

@@ -532,7 +532,8 @@ class SpaceMouse:
 
 
 if __name__ == "__main__":
-    space_mouse = SpaceMouse(vendor_id = 0x256f, product_id = 0xc635)
+    from franky_control.robot.constants import FC
+    space_mouse = SpaceMouse(vendor_id=FC.SPACEMOUSE_VENDOR_ID, product_id=FC.SPACEMOUSE_PRODUCT_ID)
     while True:
         print(space_mouse.control, "gripper:", space_mouse.control_gripper)
         time.sleep(0.02)

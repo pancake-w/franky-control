@@ -3,9 +3,9 @@ requires = ["setuptools>=45", "wheel", "setuptools-scm>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "franky_control"
+name = "franka_control_tools"
 version = "0.1.0"
-description = "High-level control and data collection tools for Franka robots"
+description = "High-level control and data collection tools for Franka robots (built on franky)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -25,10 +25,9 @@ dependencies = [
     "numpy",
     "tyro",
     "tqdm",
-    "pynput",
     "transforms3d",
     "opencv-python",
-    "requests",
+    "imageio",
 ]
 
 [project.optional-dependencies]
@@ -41,7 +40,6 @@ spacemouse = [
 # RealSense camera support
 realsense = [
     "pyrealsense2",
-    "imageio",
 ]
 
 # IK solver support (CPU version of PyTorch)
@@ -53,14 +51,20 @@ ik = [
     "sapien==3.0.0.b1",
 ]
 
+# VLA deployment support
+deploy = [
+    "requests",
+    "json-numpy",
+]
+
 # All hardware components (spacemouse + realsense + ik)
 hardware = [
-    "franky_control[spacemouse,realsense,ik]",
+    "franka_control_tools[spacemouse,realsense,ik]",
 ]
 
 # Full installation (all optional dependencies)
 all = [
-    "franky_control[hardware]",
+    "franka_control_tools[hardware,deploy]",
 ]
 
 # Development dependencies

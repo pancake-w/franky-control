@@ -6,9 +6,11 @@ from franky import (
     Robot,
 )
 
+from franky_control.robot.constants import FC
+
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--host", default="172.16.0.2", help="FCI IP of the robot")
+    parser.add_argument("--host", default=FC.ROBOT_IP, help="FCI IP of the robot")
     args = parser.parse_args()
 
     # Connect to the robot
@@ -20,7 +22,7 @@ if __name__ == "__main__":
 
     joint_motion = JointWaypointMotion(
         [
-            JointWaypoint([0.0, 0.0, 0.0, -2.2, 0.0, 2.2, 0.7]),
+            JointWaypoint(list(FC.RESET_JOINTS)),
         ]
     )
     robot.move(joint_motion)
