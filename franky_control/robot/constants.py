@@ -12,12 +12,11 @@ Usage:
     robot.move(JointWaypointMotion([JointWaypoint(FC.HOME_JOINTS)]))
 """
 
+import math
 import numpy as np
-from dataclasses import dataclass
 from typing import List, Tuple
 
 
-@dataclass(frozen=True)
 class FrankaConstants:
     """Franka Robot Constants.
     
@@ -33,19 +32,19 @@ class FrankaConstants:
     NUM_JOINTS: int = 7
     """Number of robot arm joints."""
     
-    HOME_JOINTS: Tuple[float, ...] = (0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785)
+    HOME_JOINTS: List[float] = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
     """Default home joint positions [rad]. 
     This is a common safe home position with elbow up."""
     
-    RESET_JOINTS: Tuple[float, ...] = (0.0, 0.0, 0.0, -2.2, 0.0, 2.2, 0.7)
+    RESET_JOINTS: List[float] = [0.0, 0.259, 0.0, -2.289, 0.0, 2.515, math.pi / 4]
     """Alternative reset joint positions [rad]."""
     
-    READY_JOINTS: Tuple[float, ...] = (0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785)
+    READY_JOINTS: List[float] = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
     """Ready position for manipulation tasks [rad]."""
     
     # Joint limits [rad]
-    JOINT_LIMITS_LOWER: Tuple[float, ...] = (-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973)
-    JOINT_LIMITS_UPPER: Tuple[float, ...] = (2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973)
+    JOINT_LIMITS_LOWER: List[float] = [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973]
+    JOINT_LIMITS_UPPER: List[float] = [2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973]
     
     # ==================== Gripper Configuration ====================
     GRIPPER_MAX_WIDTH: float = 0.08
@@ -68,28 +67,28 @@ class FrankaConstants:
     
     # ==================== Impedance Control ====================
     # Cartesian impedance (translational: N/m, rotational: Nm/rad)
-    DEFAULT_CARTESIAN_IMPEDANCES: Tuple[float, ...] = (600.0, 600.0, 600.0, 60.0, 60.0, 60.0)
+    DEFAULT_CARTESIAN_IMPEDANCES: List[float] = [600.0, 600.0, 600.0, 60.0, 60.0, 60.0]
     """Default Cartesian impedance [x, y, z, rx, ry, rz]."""
     
     # Joint impedance [Nm/rad]
-    DEFAULT_JOINT_IMPEDANCES: Tuple[float, ...] = (400.0, 400.0, 400.0, 400.0, 400.0, 400.0, 400.0)
+    DEFAULT_JOINT_IMPEDANCES: List[float] = [400.0, 400.0, 400.0, 400.0, 400.0, 400.0, 400.0]
     """Default joint impedance values."""
 
     # ==================== Collision Thresholds ====================
     # Lower thresholds (contact detection) [Nm] for joints
-    COLLISION_TORQUE_LOWER: Tuple[float, ...] = (25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0)
+    COLLISION_TORQUE_LOWER: List[float] = [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0]
     """Lower torque thresholds for contact detection [Nm]."""
     
     # Upper thresholds (collision detection) [Nm] for joints
-    COLLISION_TORQUE_UPPER: Tuple[float, ...] = (35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0)
+    COLLISION_TORQUE_UPPER: List[float] = [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0]
     """Upper torque thresholds for collision detection [Nm]."""
     
     # Lower force thresholds [N, N, N, Nm, Nm, Nm]
-    COLLISION_FORCE_LOWER: Tuple[float, ...] = (30.0, 30.0, 30.0, 25.0, 25.0, 25.0)
+    COLLISION_FORCE_LOWER: List[float] = [30.0, 30.0, 30.0, 25.0, 25.0, 25.0]
     """Lower force thresholds for contact detection [N, N, N, Nm, Nm, Nm]."""
     
     # Upper force thresholds [N, N, N, Nm, Nm, Nm]  
-    COLLISION_FORCE_UPPER: Tuple[float, ...] = (40.0, 40.0, 40.0, 35.0, 35.0, 35.0)
+    COLLISION_FORCE_UPPER: List[float] = [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]
     """Upper force thresholds for collision detection [N, N, N, Nm, Nm, Nm]."""
     
     # ==================== Dynamics Factors ====================

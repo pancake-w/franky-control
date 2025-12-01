@@ -22,7 +22,7 @@ if __name__ == "__main__":
 
     joint_motion = JointWaypointMotion(
         [
-            JointWaypoint(list(FC.RESET_JOINTS)),
+            JointWaypoint(FC.RESET_JOINTS),
         ]
     )
     robot.move(joint_motion)

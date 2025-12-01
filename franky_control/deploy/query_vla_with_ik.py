@@ -91,11 +91,11 @@ class VLADeployWithIK:
         self.cameras = None
         if args.use_cameras:
             if REALSENSE_AVAILABLE:
-                try:
-                    self.cameras = RealsenseAPI(height=FC.CAMERA_HEIGHT, width=FC.CAMERA_WIDTH, fps=FC.CAMERA_FPS)
-                    print(f"[INFO] Initialized {self.cameras.get_num_cameras()} camera(s)")
-                except Exception as e:
-                    print(f"[WARNING] Failed to initialize cameras: {e}")
+                self.cameras = RealsenseAPI(height=FC.CAMERA_HEIGHT, width=FC.CAMERA_WIDTH, fps=FC.CAMERA_FPS)
+                print(f"[INFO] Initialized {self.cameras.get_num_cameras()} camera(s)")
+                if self.cameras.get_num_cameras() == 0:
+                    print("[WARNING] No RealSense cameras detected")
+                    self.cameras = None
             else:
                 print("[WARNING] RealSense not available")
         
@@ -277,7 +277,7 @@ class VLADeployWithIK:
         # Move to home position
         print("[INFO] Moving to home position...")
         home_motion = JointWaypointMotion([
-            JointWaypoint(list(FC.HOME_JOINTS))
+            JointWaypoint(FC.HOME_JOINTS)
         ], relative_dynamics_factor=RelativeDynamicsFactor(
             velocity=FC.DEFAULT_VELOCITY_FACTOR, 
             acceleration=FC.DEFAULT_ACCELERATION_FACTOR, 

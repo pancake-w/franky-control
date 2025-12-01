@@ -488,7 +488,7 @@ def main(args: Args):
     # Move to home position
     print("[INFO] Moving to home position...")
     home_motion = JointWaypointMotion([
-        JointWaypoint(list(FC.HOME_JOINTS))
+        JointWaypoint(FC.RESET_JOINTS)
     ], relative_dynamics_factor=RelativeDynamicsFactor(
         velocity=FC.DEFAULT_VELOCITY_FACTOR, 
         acceleration=FC.DEFAULT_ACCELERATION_FACTOR, 
