@@ -433,9 +433,9 @@ class VLADeployWithIK:
                     waypoint_motion = JointWaypointMotion(
                         [waypoint],
                         relative_dynamics_factor=RelativeDynamicsFactor(
-                            velocity=0.18,
-                            acceleration=0.13,
-                            jerk=0.11
+                            velocity=FC.DEFAULT_VELOCITY_FACTOR,
+                            acceleration=FC.DEFAULT_ACCELERATION_FACTOR,
+                            jerk=FC.DEFAULT_JERK_FACTOR
                         )
                     )
                     self.robot.move(waypoint_motion, asynchronous=True)

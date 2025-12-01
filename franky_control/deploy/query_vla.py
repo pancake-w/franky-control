@@ -317,9 +317,9 @@ class VLADeploy:
                     cartesian_waypoint_motion = CartesianWaypointMotion(
                         [CartesianWaypoint(CartesianState(pose=target_affine))],
                         relative_dynamics_factor=RelativeDynamicsFactor(
-                            velocity=0.16,
-                            acceleration=0.10,
-                            jerk=0.10,
+                            velocity=FC.DEFAULT_VELOCITY_FACTOR,
+                            acceleration=FC.DEFAULT_ACCELERATION_FACTOR,
+                            jerk=FC.DEFAULT_JERK_FACTOR,
                         )
                     )
                     self.robot.move(cartesian_waypoint_motion, asynchronous=True)

@@ -2,6 +2,7 @@
 
 import os
 import sys
+from .panda_ik_solver import SimAlignedPandaIKSolver, create_sim_aligned_ik_solver, SimPose
 
 # Path to assets
 ASSETS_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "assets")
