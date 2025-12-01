@@ -1,0 +1,127 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools-scm>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "franky_control"
+version = "0.1.0"
+description = "High-level control and data collection tools for Franka robots"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Bingwen Wei", email = "pancake.wbw@gmail.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+# Core dependencies (always installed)
+dependencies = [
+    "numpy",
+    "tyro",
+    "tqdm",
+    "pynput",
+    "transforms3d",
+    "opencv-python",
+    "requests",
+]
+
+[project.optional-dependencies]
+# SpaceMouse controller support
+spacemouse = [
+    "hidapi",
+    "pynput",
+]
+
+# RealSense camera support
+realsense = [
+    "pyrealsense2",
+    "imageio",
+]
+
+# IK solver support (CPU version of PyTorch)
+ik = [
+    "torch>=2.0.0",
+    "torchvision",
+    "torchaudio",
+    "pytorch_kinematics==0.7.5",
+    "sapien==3.0.0.b1",
+]
+
+# All hardware components (spacemouse + realsense + ik)
+hardware = [
+    "franky_control[spacemouse,realsense,ik]",
+]
+
+# Full installation (all optional dependencies)
+all = [
+    "franky_control[hardware]",
+]
+
+# Development dependencies
+dev = [
+    "pytest",
+    "pytest-cov",
+    "black",
+    "flake8",
+    "isort",
+    "mypy",
+]
+
+[project.urls]
+Homepage = "https://github.com/pancake-w/franky-control"
+Repository = "https://github.com/pancake-w/franky-control"
+Documentation = "https://github.com/pancake-w/franky-control#readme"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["franky_control*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+franky_control = ["**/*.py", "**/*.urdf", "**/*.json"]
+
+# Black formatter configuration
+[tool.black]
+line-length = 100
+target-version = ['py310']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+# isort configuration
+[tool.isort]
+profile = "black"
+line_length = 100
+skip_gitignore = true
+
+# pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+# mypy configuration
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

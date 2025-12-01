@@ -67,32 +67,49 @@ If real-time is not listed in your groups, try rebooting.
 
 ### Installing franky
 
-#### Custom Insatllation [Usually we use]
+#### Step 1: Install franky-control (the robot control library)
 
-We also provide wheels for libfranka versions *0.7.1*, *0.8.0*, *0.9.2*, *0.12.1*, *0.13.3*,
+We provide wheels for libfranka versions *0.7.1*, *0.8.0*, *0.9.2*, *0.12.1*, *0.13.3*,
 *0.14.2*, *0.17.0*, and *0.18.0*.
-They can be installed via
 
 ```bash
-VERSION=0-9-2 # for franka emika panda system version 4.2.1
-VERSION=0-17-0 # for franka research 3 system version 5.7.2
-VERSION=0-18-0 # for franka research 3 system version 5.9.0
+# Choose the version that matches your Franka system
+VERSION=0-9-2   # for Franka Emika Panda system version 4.2.1
+VERSION=0-17-0  # for Franka Research 3 system version 5.7.2
+VERSION=0-18-0  # for Franka Research 3 system version 5.9.0
+
+# Download and install franky-control wheels
 wget https://github.com/TimSchneider42/franky/releases/latest/download/libfranka_${VERSION}_wheels.zip
 unzip libfranka_${VERSION}_wheels.zip
-pip install numpy
-pip uninstall franky-control # If franky has been installed into your conda env 
+pip uninstall franky-control -y 2>/dev/null  # Remove if previously installed
 pip install --no-index --find-links=./dist franky-control
-pip install tyro tqdm pynput transforms3d opencv-python requests
+```
 
-# SpaceMouse
-pip install hidapi pynput 
+#### Step 2: Install this package (franky_control)
 
-# RealSense camera
-pip install pyrealsense2 imageio
+```bash
+# Basic installation (core dependencies only)
+pip install -e .
+pip install -e ".[all]"         # Everything
 
-# ik solver
+# Or install with specific optional features:
+pip install -e ".[spacemouse]"  # SpaceMouse controller support
+pip install -e ".[realsense]"   # RealSense camera support  
+pip install -e ".[ik]"          # IK solver (PyTorch + SAPIEN)
+pip install -e ".[hardware]"    # All hardware components
+pip install -e ".[dev]"         # Development tools
+```
+
+#### Step 3 (Optional): Install PyTorch with specific index URL
+
+If you need CPU-only PyTorch or a specific version:
+
+```bash
+# CPU-only PyTorch (recommended for real robot control)
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+
+# Or use Tsinghua mirror (for users in China)
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://mirrors.tuna.tsinghua.edu.cn/pytorch/whl/cpu
-pip install pytorch_kinematics==0.7.5 sapien==3.0.0.b1
 ```
 
 
@@ -173,6 +190,6 @@ python -m franky_control.data_collection.data_collection_with_ik \
 
 ## Policy Deploy
 
-See the files in [data collection](./franky_control/deploy/__init__.py)
+See the files in [policy deploy](./franky_control/deploy/__init__.py)
 
 
