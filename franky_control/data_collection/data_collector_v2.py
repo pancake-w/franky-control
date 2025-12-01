@@ -86,7 +86,7 @@ class DataCollector:
         robot: Robot,
         cameras=None,
         gripper=None,
-        is_image_encoded: bool = False,
+        is_image_encoded: bool = True,
         jpeg_quality: int = 95,
     ):
         """Initialize data collector.

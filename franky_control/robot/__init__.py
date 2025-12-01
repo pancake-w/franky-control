@@ -1,6 +1,7 @@
 """Robot control utilities for franky_control."""
 
 from .gripper_controller import GripperController
+from .ik_controller import IKController
 from .constants import (
     FrankaConstants,
     FC,
