@@ -63,7 +63,6 @@ class FrankyDataCollectionWithIK:
         self.cameras = cameras
 
         self.args = args
-        self.data_collector = DataCollector(robot, cameras)
         self.use_space_mouse = args.use_space_mouse
         if self.use_space_mouse:
             if not SPACEMOUSE_AVAILABLE:
@@ -86,7 +85,7 @@ class FrankyDataCollectionWithIK:
         self.command_rotation = None
         self.control_frequency = args.control_frequency
         self.control_time_step = 1.0 / self.control_frequency
-        self.last_gripper_state = 1.0  # Start with open
+        self.gripper_is_closed = False  # Simple open/close state tracking
         self.init_time = time.time()
         
         # Initialize gripper controller if available
@@ -105,6 +104,11 @@ class FrankyDataCollectionWithIK:
             except Exception as e:
                 print(f"[WARNING] Failed to initialize gripper: {e}")
                 self.gripper_controller = None
+        else:
+            self.gripper_controller = None
+
+        # Initialize data collector with gripper reference
+        self.data_collector = DataCollector(robot, cameras, gripper=self.gripper_controller)
 
         self.pos_scale = args.pos_scale
         self.rot_scale = args.rot_scale
@@ -298,6 +302,8 @@ class FrankyDataCollectionWithIK:
                               f"ori_err={np.rad2deg(ori_error):.3f}deg")
 
                     # Save action data
+                    # Note: gripper_control is normalized 0-1 (action)
+                    # gripper_width is in meters 0-0.08 (state, auto-read from gripper)
                     save_action = {
                         "delta": {
                             "position": delta_xyz,
@@ -309,10 +315,10 @@ class FrankyDataCollectionWithIK:
                             "euler_angle": np.array([mat2euler(self.command_rotation, 'sxyz')])[0],
                             "joints": target_joints.copy(),
                         },
-                        "gripper_control": control_gripper
+                        "gripper_control": control_gripper  # Action: normalized 0-1
                     }
 
-                    # Collect data
+                    # Collect data (gripper_width is auto-read from self.data_collector.gripper)
                     self.data_collector.update_data_dict(
                         instruction=self.instruction,
                         action=save_action,
@@ -327,18 +333,18 @@ class FrankyDataCollectionWithIK:
                     # Update current joints for next IK warm start (use unfiltered for IK)
                     self.current_joints = target_joints
 
-                    # Control gripper (if available)
-                    if hasattr(self, 'gripper_controller') and self.gripper_controller is not None:
-                        if abs(control_gripper - self.last_gripper_state) > 0.02:
-                            gripper_width = 0.08 * control_gripper  # Scale to gripper range
+                    # Control gripper: simple open/close based on control_gripper value
+                    # control_gripper < 0.5 -> close, control_gripper >= 0.5 -> open
+                    if self.gripper_controller is not None:
+                        should_close = control_gripper < 0.5
+                        if should_close != self.gripper_is_closed:
                             try:
-                                if control_gripper < 0.5:
-                                    # Close/grasp
-                                    self.gripper_controller.grasp(force=50.0, epsilon_inner=0.08, epsilon_outer=0.08, async_call=True)
+                                if should_close:
+                                    self.gripper_controller.grasp(async_call=True, force=FC.GRIPPER_DEFAULT_FORCE, 
+                                                                  epsilon_inner=0.06, epsilon_outer=0.06)
                                 else:
-                                    # Open to specified width
-                                    self.gripper_controller.move(gripper_width, speed=0.12, async_call=True)
-                                self.last_gripper_state = control_gripper
+                                    self.gripper_controller.open(async_call=True)
+                                self.gripper_is_closed = should_close
                             except Exception as e:
                                 print(f"[WARNING] Gripper control failed: {e}")
 

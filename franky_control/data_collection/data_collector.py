@@ -41,6 +41,7 @@ class DataCollector:
         self,
         robot: Robot,
         cameras=None,
+        gripper=None,
         is_image_encode: bool = False,
         *args,
         **kwargs
@@ -51,10 +52,12 @@ class DataCollector:
         Args:
             robot: franky.Robot instance
             cameras: Camera wrapper instance (optional)
+            gripper: GripperController instance (optional) for reading gripper width
             is_image_encode: Whether to encode images as JPEG
         """
         self.robot = robot
         self.cameras = cameras
+        self.gripper = gripper
         self.is_image_encode = is_image_encode
         self.data_dict = self.get_empty_data_dict()
         self.device = 'cpu'
@@ -205,7 +208,10 @@ class DataCollector:
         self.data_dict["observation"]["depth_timestamp"].append(timestamp)
     
     def update_state(self):
-        """Update robot state (joints, pose, gripper)."""
+        """Update robot state (joints, pose, gripper).
+        
+        Automatically reads gripper width from self.gripper if available.
+        """
         # Get joint positions
         joint_state = self.robot.current_joint_state
         joint_pos = np.array(joint_state.position)
@@ -216,14 +222,16 @@ class DataCollector:
         ee_position = np.array(ee_affine.translation)
         ee_orientation = np.array(ee_affine.quaternion)  # [w, x, y, z]
         
-        # Get gripper state (approximate, franky doesn't have direct gripper width API)
-        # You may need to track this separately in your control loop
-        gripper_state = 0.04  # Placeholder
+        # Get gripper state (width in meters, 0.0 to 0.08)
+        if self.gripper is not None:
+            gripper_width = self.gripper.width
+        else:
+            gripper_width = -1  # Placeholder if no gripper
         
         self.data_dict["state"]["joint"]["position"].append(joint_pos)
         self.data_dict["state"]["end_effector"]["position"].append(ee_position)
         self.data_dict["state"]["end_effector"]["orientation"].append(ee_orientation)
-        self.data_dict["state"]["end_effector"]["gripper_width"].append(gripper_state)
+        self.data_dict["state"]["end_effector"]["gripper_width"].append(gripper_width)
     
     def update_action(self, save_action: Dict[str, Any]):
         """
@@ -252,14 +260,14 @@ class DataCollector:
         self,
         instruction: str,
         action: Dict[str, Any],
-        timestamp: Optional[float] = None
+        timestamp: Optional[float] = None,
     ):
         """
         Update all data at once.
         
         Args:
             instruction: Task instruction
-            action: Action dictionary
+            action: Action dictionary containing gripper_control (0-1 normalized)
             timestamp: Current timestamp
         """
         self.update_rgb(timestamp)

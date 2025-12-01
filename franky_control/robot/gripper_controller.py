@@ -191,6 +191,35 @@ class GripperController:
         return self._max_width
     
     @property
+    def width(self) -> float:
+        """Get current gripper width [m].
+        
+        Returns:
+            Current gripper finger width in meters (0.0 to 0.08).
+        """
+        state = self.gripper.state
+        return state.width
+    
+    @property
+    def state(self):
+        """Get full gripper state.
+        
+        Returns:
+            GripperState object with width, max_width, is_grasped, temperature
+        """
+        return self.gripper.state
+    
+    @property
+    def is_grasped(self) -> bool:
+        """Check if gripper is currently grasping an object.
+        
+        Returns:
+            True if object is grasped, False otherwise.
+        """
+        state = self.gripper.state
+        return state.is_grasped
+    
+    @property
     def is_homed(self) -> bool:
         """Check if gripper has been homed."""
         return self._is_homed

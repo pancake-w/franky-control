@@ -138,7 +138,7 @@ class VLADeployWithIK:
         self.act_url = f"http://{args.vla_server_ip}:{args.vla_server_port}/act"
         self.init_time = time.time()
         self.record_image = []
-        self.last_gripper_state = 1.0
+        self.gripper_is_closed = False  # Simple open/close state tracking
         
         # Scaling factors
         self.pos_scale = args.pos_scale
@@ -234,14 +234,11 @@ class VLADeployWithIK:
         joint_state = self.robot.current_joint_state
         joints = np.array(joint_state.position)
         
-        # Get gripper width
+        # Get gripper width (read actual state from gripper)
         if self.gripper_controller is not None:
-            try:
-                gripper_width = np.array([self.last_gripper_state * 0.08])
-            except:
-                gripper_width = np.array([0.08])
+            gripper_width = np.array([self.gripper_controller.width])
         else:
-            gripper_width = np.array([0.08])
+            gripper_width = np.array([FC.GRIPPER_MAX_WIDTH])
         
         self.observation_window.append({
             'ee_pose_T': ee_matrix,  # np shape (4,4)
@@ -446,24 +443,18 @@ class VLADeployWithIK:
                     # Update current joints for next IK warm start (use unfiltered for IK)
                     self.current_joints = target_joints
                     
-                    # Control gripper
+                    # Control gripper: simple open/close based on gripper action value
+                    # gripper < 0.5 -> close, gripper >= 0.5 -> open
                     if self.gripper_controller is not None:
-                        gripper_width = 0.08 * gripper
-                        if abs(gripper - self.last_gripper_state) > 0.1:
+                        should_close = gripper < 0.5
+                        if should_close != self.gripper_is_closed:
                             try:
-                                if gripper < 0.5:
-                                    # Close/grasp
-                                    self.gripper_controller.grasp(
-                                        force=50.0,
-                                        epsilon_inner=0.06,
-                                        epsilon_outer=0.06,
-                                        async_call=True
-                                    )
+                                if should_close:
+                                    self.gripper_controller.grasp(async_call=True, force=FC.GRIPPER_DEFAULT_FORCE, 
+                                                                  epsilon_inner=0.06, epsilon_outer=0.06)
                                 else:
-                                    # Open
-                                    gripper_width = max(0.015, min(gripper_width, 0.07))
-                                    self.gripper_controller.move(gripper_width, speed=0.12, async_call=True)
-                                self.last_gripper_state = gripper
+                                    self.gripper_controller.open(async_call=True)
+                                self.gripper_is_closed = should_close
                             except Exception as e:
                                 print(f"[WARNING] Gripper control failed: {e}")
                     
