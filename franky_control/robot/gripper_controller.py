@@ -3,6 +3,8 @@
 This module provides a simple interface for controlling the Franka gripper.
 """
 
+import time
+import threading
 from typing import Optional
 from franky import Gripper
 from franky_control.robot.constants import FC
@@ -13,18 +15,63 @@ class GripperController:
     
     Provides simplified interface for common gripper operations.
     Based on franky.Gripper API.
+    
+    Features:
+    - Cached gripper state for fast non-blocking reads
+    - Background thread updates state periodically
     """
     
-    def __init__(self, robot_ip: str):
+    def __init__(self, robot_ip: str, cache_update_rate: float = 30.0):
         """
         Initialize gripper controller.
         
         Args:
             robot_ip: Robot IP address (same as robot control IP)
+            cache_update_rate: Rate to update cached gripper state [Hz] (default: 30 Hz)
         """
         self.gripper = Gripper(robot_ip)
         self._is_homed = False
         self._max_width = FC.GRIPPER_MAX_WIDTH  # Default max width [m]
+        
+        # Cached state for fast non-blocking reads
+        self._cached_width = 0.0
+        self._cached_is_grasped = False
+        self._cache_lock = threading.Lock()
+        self._cache_update_interval = 1.0 / cache_update_rate
+        
+        # Background thread for state updates
+        self._cache_thread = None
+        self._cache_thread_running = False
+    
+    def start_state_cache(self):
+        """Start background thread to cache gripper state."""
+        if self._cache_thread is not None and self._cache_thread.is_alive():
+            return  # Already running
+        
+        self._cache_thread_running = True
+        self._cache_thread = threading.Thread(target=self._cache_update_loop, daemon=True)
+        self._cache_thread.start()
+        print(f"[Gripper] State cache started ({1.0/self._cache_update_interval:.0f} Hz)")
+    
+    def stop_state_cache(self):
+        """Stop background state cache thread."""
+        self._cache_thread_running = False
+        if self._cache_thread is not None:
+            self._cache_thread.join(timeout=1.0)
+            self._cache_thread = None
+            print("[Gripper] State cache stopped")
+    
+    def _cache_update_loop(self):
+        """Background loop to update cached gripper state."""
+        while self._cache_thread_running:
+            try:
+                state = self.gripper.state
+                with self._cache_lock:
+                    self._cached_width = state.width
+                    self._cached_is_grasped = state.is_grasped
+            except Exception as e:
+                pass  # Silently ignore errors in background thread
+            time.sleep(self._cache_update_interval)
         
     def home(self, async_call: bool = False) -> bool:
         """
@@ -53,6 +100,8 @@ class GripperController:
             except:
                 pass
             print("[Gripper] Homing successful")
+            # Auto-start state cache for fast reads
+            self.start_state_cache()
         else:
             print("[Gripper] Homing failed")
         return success
@@ -192,7 +241,25 @@ class GripperController:
     
     @property
     def width(self) -> float:
-        """Get current gripper width [m].
+        """Get current gripper width [m] from cache (non-blocking).
+        
+        Returns:
+            Current gripper finger width in meters (0.0 to 0.08).
+            Uses cached value if cache thread is running, otherwise reads directly.
+        """
+        if self._cache_thread_running:
+            with self._cache_lock:
+                return self._cached_width
+        # Fallback to direct read (blocking)
+        state = self.gripper.state
+        return state.width
+    
+    @property
+    def width_sync(self) -> float:
+        """Get current gripper width [m] directly (blocking).
+        
+        This always reads from the gripper directly, which can take 30-50ms.
+        Use `width` property for fast cached reads.
         
         Returns:
             Current gripper finger width in meters (0.0 to 0.08).
@@ -211,11 +278,16 @@ class GripperController:
     
     @property
     def is_grasped(self) -> bool:
-        """Check if gripper is currently grasping an object.
+        """Check if gripper is currently grasping an object (from cache).
         
         Returns:
             True if object is grasped, False otherwise.
+            Uses cached value if cache thread is running, otherwise reads directly.
         """
+        if self._cache_thread_running:
+            with self._cache_lock:
+                return self._cached_is_grasped
+        # Fallback to direct read (blocking)
         state = self.gripper.state
         return state.is_grasped
     

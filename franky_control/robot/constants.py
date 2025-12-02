@@ -108,9 +108,6 @@ class FrankaConstants:
     DEFAULT_CONTROL_FREQUENCY: float = 10.0
     """Default control loop frequency [Hz]."""
     
-    VLA_CONTROL_FREQUENCY: float = 10.0
-    """Control frequency for VLA deployment [Hz]."""
-    
     DEFAULT_POS_SCALE: float = 0.015
     """Default position action scaling for teleoperation."""
     

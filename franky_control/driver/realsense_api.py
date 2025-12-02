@@ -3,26 +3,34 @@ import pyrealsense2 as rs
 from collections import OrderedDict
 import os
 import argparse
+import threading
+import time
 
 class RealsenseAPI:
-    """Wrapper that implements boilerplate code for RealSense cameras"""
+    """Wrapper that implements boilerplate code for RealSense cameras
+    
+    Features:
+    - Async frame capture in background thread for non-blocking reads
+    - Cached frames for fast access in control loops
+    """
 
-    def __init__(self, height=480, width=640, fps=30, warm_start=60):
+    def __init__(self, height=480, width=640, fps=30, warm_start=60, use_async=True):
         self.height = height
         self.width = width
         self.fps = fps
+        self.use_async = use_async
 
         # Identify devices
         self.device_ls = []
         for c in rs.context().query_devices():
-            self.device_ls.append(c.get_info(rs.camera_info(1)))
+            self.device_ls.append(c.get_info(rs.camera_info.serial_number))
 
         # Start stream
         print(f"Connecting to RealSense cameras ({len(self.device_ls)} found) ...")
         self.pipes = []
         self.profiles = OrderedDict()
         self.sensors = OrderedDict()  # Store sensors for parameter control
-        
+
         for i, device_id in enumerate(self.device_ls):
             pipe = rs.pipeline()
             config = rs.config()
@@ -34,12 +42,20 @@ class RealsenseAPI:
             )
 
             self.pipes.append(pipe)
-            self.profiles[device_id] = pipe.start(config)
+            profile = pipe.start(config)
+            self.profiles[device_id] = profile
             
-            # Get device and sensors for parameter control
-            device = rs.context().query_devices()[i]
-            color_sensor = device.first_color_sensor()
+            device = profile.get_device()
+            
             depth_sensor = device.first_depth_sensor()
+            color_sensor = device.first_color_sensor()
+
+            if depth_sensor and depth_sensor.supports(rs.option.frames_queue_size):
+                depth_sensor.set_option(rs.option.frames_queue_size, 1)
+            
+            if color_sensor and color_sensor.supports(rs.option.frames_queue_size):
+                color_sensor.set_option(rs.option.frames_queue_size, 1)
+
             self.sensors[device_id] = {
                 'color': color_sensor,
                 'depth': depth_sensor,
@@ -49,9 +65,84 @@ class RealsenseAPI:
             print(f"Connected to camera {i+1} ({device_id}).")
 
         self.align = rs.align(rs.stream.color)
+        
+        # Async frame cache
+        num_cams = len(self.device_ls)
+        self._cached_rgb = np.zeros([num_cams, self.height, self.width, 3], dtype=np.uint8)
+        self._cached_depth = np.zeros([num_cams, self.height, self.width], dtype=np.uint16)
+        self._cached_timestamp = 0.0  # Timestamp when frame was captured
+        self._cache_lock = threading.Lock()
+        self._async_thread = None
+        self._async_running = False
+        
         # Warm start camera (realsense automatically adjusts brightness during initial frames)
         for _ in range(warm_start):
             self._get_frames()
+        
+        # Start async capture if enabled
+        if self.use_async:
+            self.start_async_capture()
+    
+    def start_async_capture(self):
+        """Start background thread for async frame capture."""
+        if self._async_thread is not None and self._async_thread.is_alive():
+            return
+        
+        self._async_running = True
+        self._async_thread = threading.Thread(target=self._async_capture_loop, daemon=True)
+        self._async_thread.start()
+        print(f"[Camera] Async capture started ({self.fps} FPS target)")
+    
+    def stop_async_capture(self):
+        """Stop async capture thread."""
+        self._async_running = False
+        if self._async_thread is not None:
+            self._async_thread.join(timeout=1.0)
+            self._async_thread = None
+    
+    def get_frame_age(self) -> float:
+        """Get age of cached frame in seconds.
+        
+        Returns:
+            Time since the cached frame was captured (seconds).
+            Returns 0 if async capture is not running.
+        """
+        if not self._async_running:
+            return 0.0
+        with self._cache_lock:
+            if self._cached_timestamp == 0:
+                return 0.0
+            return time.time() - self._cached_timestamp
+    
+    def get_frame_timestamp(self) -> float:
+        """Get timestamp of cached frame.
+        
+        Returns:
+            Unix timestamp when the cached frame was captured.
+        """
+        with self._cache_lock:
+            return self._cached_timestamp
+    
+    def _async_capture_loop(self):
+        """Background loop to continuously capture frames."""
+        while self._async_running:
+            try:
+                framesets = [pipe.wait_for_frames() for pipe in self.pipes]
+                aligned_frames = [self.align.process(frameset) for frameset in framesets]
+                capture_time = time.time()  # Record capture timestamp
+                
+                # Update cache
+                with self._cache_lock:
+                    for i, frameset in enumerate(aligned_frames):
+                        color_frame = frameset.get_color_frame()
+                        depth_frame = frameset.get_depth_frame()
+                        self._cached_rgb[i, :, :, :] = np.asanyarray(color_frame.get_data())
+                        self._cached_depth[i, :, :] = np.asanyarray(depth_frame.get_data())
+                    self._cached_timestamp = capture_time
+            except Exception as e:
+                pass  # Silently ignore errors
+            # Small sleep to prevent CPU spinning (frames come at ~fps rate anyway)
+            time.sleep(0.001)
 
     def _get_frames(self):
         framesets = [pipe.wait_for_frames() for pipe in self.pipes]
@@ -83,7 +174,18 @@ class RealsenseAPI:
         return len(self.device_ls)
 
     def get_rgbd(self):
-        """Returns a numpy array of [n_cams, height, width, RGBD]"""
+        """Returns a numpy array of [n_cams, height, width, RGBD]
+        
+        Uses cached frames if async capture is running.
+        """
+        if self._async_running:
+            with self._cache_lock:
+                rgbd = np.empty([self.get_num_cameras(), self.height, self.width, 4], dtype=np.uint16)
+                rgbd[:, :, :, :3] = self._cached_rgb
+                rgbd[:, :, :, 3] = self._cached_depth
+                return rgbd.copy()
+        
+        # Fallback to sync read
         framesets = self._get_frames()
         num_cams = self.get_num_cameras()
 
@@ -99,7 +201,15 @@ class RealsenseAPI:
         return rgbd
 
     def get_rgb(self):
-        """Returns a numpy array of [n_cams, height, width, RGB]"""
+        """Returns a numpy array of [n_cams, height, width, RGB]
+        
+        Uses cached frames if async capture is running (non-blocking).
+        """
+        if self._async_running:
+            with self._cache_lock:
+                return self._cached_rgb.copy()
+        
+        # Fallback to sync read
         framesets = self._get_frames()
         num_cams = self.get_num_cameras()
 
@@ -112,7 +222,15 @@ class RealsenseAPI:
         return rgb
 
     def get_depth(self):
-        """Returns a numpy array of [n_cams, height, width, depth]"""
+        """Returns a numpy array of [n_cams, height, width, depth]
+        
+        Uses cached frames if async capture is running (non-blocking).
+        """
+        if self._async_running:
+            with self._cache_lock:
+                return self._cached_depth.copy()
+        
+        # Fallback to sync read
         framesets = self._get_frames()
         num_cams = self.get_num_cameras()
 
@@ -271,6 +389,9 @@ class RealsenseAPI:
 
     def close(self):
         """Properly close all camera streams."""
+        # Stop async capture first
+        self.stop_async_capture()
+        
         for pipe in self.pipes:
             pipe.stop()
         print("All camera streams closed.")
