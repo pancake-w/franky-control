@@ -103,7 +103,6 @@ class DataCollector:
         self.gripper = gripper
         self.is_image_encoded = is_image_encoded
         self.jpeg_quality = jpeg_quality
-        self.init_time = time.time()
         
         # Video recording buffer (always raw for video saving)
         self.record_images: List[np.ndarray] = []
@@ -114,26 +113,42 @@ class DataCollector:
     def clear(self):
         """Clear all collected data."""
         self.data = {
-            "task_info": {"instruction": []},
-            "action": {
-                "delta_position": [],
-                "delta_euler": [],
-                "abs_position": [],
-                "abs_euler": [],
-                "abs_joints": [],
-                "gripper_control": [],
+            "task_info": {
+                "instruction": [],
             },
-            "observation": {
-                "is_image_encoded": self.is_image_encoded,
-                "rgb": [],
-                "depth": [],
+            "action": {
+                "end_effector": {
+                    "delta_orientation": [],
+                    "delta_position": [],
+                    "delta_euler": [],
+                    "abs_position": [],
+                    "abs_euler": [],
+                    "abs_joints": [],
+                    "gripper_control": [],
+                },
+                "joint": {
+                    "position": [],
+                    "gripper_control": [],
+                },
                 "timestamp": [],
             },
+            "observation": {
+                "is_image_encode": self.is_image_encoded,
+                "rgb": [],
+                "rgb_timestamp": [],
+                "depth": [],
+                "depth_timestamp": [],
+            },
             "state": {
-                "abs_position": [],
-                "abs_euler": [],  # quaternion [w,x,y,z]
-                "abs_joints": [],
-                "gripper_width": [],
+                "end_effector": {
+                    "orientation": [],
+                    "position": [],
+                    "gripper_width": [],
+                },
+                "joint": {
+                    "position": [],
+                },
+                "timestamp": [],
             },
         }
         self.record_images = []
@@ -166,7 +181,7 @@ class DataCollector:
         Args:
             instruction: Task instruction string
         """
-        timestamp = time.time() - self.init_time
+        timestamp = time.time()
         
         # Get camera images
         if self.cameras is not None:
@@ -190,43 +205,59 @@ class DataCollector:
         joints = np.array(self.robot.current_joint_state.position)
         gripper_width = self.gripper.width if self.gripper else 0.08
         
-        # Store data
+        # Store observation data
         self.data["observation"]["rgb"].append(images_to_store)
+        self.data["observation"]["rgb_timestamp"].append(timestamp)
         self.data["observation"]["depth"].append(depth)
-        self.data["observation"]["timestamp"].append(timestamp)
-        self.data["state"]["abs_position"].append(np.array(ee_affine.translation))
-        self.data["state"]["abs_euler"].append(np.array(mat2euler(ee_affine.matrix[:3, :3], 'sxyz')))
-        self.data["state"]["abs_joints"].append(joints)
-        self.data["state"]["gripper_width"].append(gripper_width)
+        self.data["observation"]["depth_timestamp"].append(timestamp)
+        
+        # Store state data
+        self.data["state"]["end_effector"]["position"].append(np.array(ee_affine.translation))
+        self.data["state"]["end_effector"]["orientation"].append(np.array(ee_affine.quaternion))  # [w, x, y, z]
+        self.data["state"]["end_effector"]["gripper_width"].append(gripper_width)
+        self.data["state"]["joint"]["position"].append(joints)
+        self.data["state"]["timestamp"].append(timestamp)
+        
+        # Store task info
         self.data["task_info"]["instruction"].append(instruction)
     
     def record_action(
         self,
         delta_xyz: np.ndarray,
         delta_euler: np.ndarray,
+        delta_orientation: np.ndarray,
         abs_position: np.ndarray,
         abs_rotation: np.ndarray,
         gripper_control: float,
         abs_joints: Optional[np.ndarray] = None,
+        timestamp: Optional[float] = None,
     ):
         """Record action data.
         
         Args:
             delta_xyz: Position delta [3]
             delta_euler: Euler angle delta [3] (sxyz)
+            delta_orientation: Orientation delta as quaternion [4] (w, x, y, z)
             abs_position: Absolute position [3]
             abs_rotation: Absolute rotation matrix [3,3]
             gripper_control: Gripper action (0=close, 1=open)
             abs_joints: Absolute joint positions [7] (for IK-based control)
+            timestamp: Optional timestamp for the action (uses time.time() if None)
         """
-        self.data["action"]["delta_position"].append(delta_xyz.copy())
-        self.data["action"]["delta_euler"].append(delta_euler.copy())
-        self.data["action"]["abs_position"].append(abs_position.copy())
-        self.data["action"]["abs_euler"].append(np.array(mat2euler(abs_rotation, 'sxyz')))
-        self.data["action"]["gripper_control"].append(gripper_control)
+        action_timestamp = time.time() if timestamp is None else timestamp
+        
+        action = self.data["action"]["end_effector"]
+        action["delta_position"].append(delta_xyz.copy())
+        action["delta_euler"].append(delta_euler.copy())
+        action["delta_orientation"].append(delta_orientation.copy())
+        action["abs_position"].append(abs_position.copy())
+        action["abs_euler"].append(np.array(mat2euler(abs_rotation, 'sxyz')))
+        action["gripper_control"].append(gripper_control)
         
         if abs_joints is not None:
-            self.data["action"]["abs_joints"].append(abs_joints.copy())
+            action["abs_joints"].append(abs_joints.copy())
+        
+        self.data["action"]["timestamp"].append(action_timestamp)
     
     # ==================== Convenience Methods ====================
     
@@ -246,7 +277,7 @@ class DataCollector:
             'joints': np.array(self.robot.current_joint_state.position),
             'gripper_width': np.array([self.gripper.width if self.gripper else 0.08]),
             'instruction': instruction,
-            'images': self.data["observation"]["rgb"][-1].astype(np.uint8),
+            'images': self.data["observation"]["rgb"][-1],
         }
     
     @property

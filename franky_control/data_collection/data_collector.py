@@ -82,6 +82,7 @@ class DataCollector:
                     "position": [],
                     "gripper_control": [],
                 },
+                "timestamp": [],  # Action timestamp for time alignment verification
             },
             "observation": {
                 "is_image_encode": self.is_image_encode,
@@ -99,6 +100,7 @@ class DataCollector:
                 "joint": {
                     "position": [],
                 },
+                "timestamp": [],  # State timestamp
             },
         }
         return data_dict
@@ -182,14 +184,24 @@ class DataCollector:
         Update RGB and depth observations from cameras.
         
         Args:
-            timestamp: Current timestamp (uses time.time() if None)
+            timestamp: Fallback timestamp if camera doesn't provide one (uses time.time() if None)
         """
         if self.cameras is None:
             return
         
         rgb = self.cameras.get_rgb()
         depth = self.cameras.get_depth()
-        timestamp = time.time() if timestamp is None else timestamp
+        
+        # Use camera's frame timestamp if available (more accurate for async capture)
+        # This ensures observation timestamp matches when the frame was actually captured
+        if hasattr(self.cameras, 'get_frame_timestamp'):
+            frame_timestamp = self.cameras.get_frame_timestamp()
+            if frame_timestamp > 0:
+                timestamp = frame_timestamp
+            else:
+                timestamp = time.time() if timestamp is None else timestamp
+        else:
+            timestamp = time.time() if timestamp is None else timestamp
         
         if self.is_image_encode:
             # Encode as JPEG
@@ -211,7 +223,10 @@ class DataCollector:
         """Update robot state (joints, pose, gripper).
         
         Automatically reads gripper width from self.gripper if available.
+        Records timestamp when state is captured.
         """
+        state_timestamp = time.time()  # Record when state is captured
+        
         # Get joint positions
         joint_state = self.robot.current_joint_state
         joint_pos = np.array(joint_state.position)
@@ -223,6 +238,7 @@ class DataCollector:
         ee_orientation = np.array(ee_affine.quaternion)  # [w, x, y, z]
         
         # Get gripper state (width in meters, 0.0 to 0.08)
+        # Uses cached value if gripper cache is running (fast, non-blocking)
         if self.gripper is not None:
             gripper_width = self.gripper.width
         else:
@@ -232,8 +248,9 @@ class DataCollector:
         self.data_dict["state"]["end_effector"]["position"].append(ee_position)
         self.data_dict["state"]["end_effector"]["orientation"].append(ee_orientation)
         self.data_dict["state"]["end_effector"]["gripper_width"].append(gripper_width)
+        self.data_dict["state"]["timestamp"].append(state_timestamp)
     
-    def update_action(self, save_action: Dict[str, Any]):
+    def update_action(self, save_action: Dict[str, Any], timestamp: Optional[float] = None):
         """
         Update action data.
         
@@ -242,7 +259,10 @@ class DataCollector:
                 - "delta": {"position", "orientation", "euler_angle"}
                 - "abs": {"position", "euler_angle", "joints"}
                 - "gripper_control"
+            timestamp: Optional timestamp for the action (uses time.time() if None)
         """
+        action_timestamp = time.time() if timestamp is None else timestamp
+        
         action = self.data_dict['action']["end_effector"]
         action["delta_position"].append(save_action["delta"]["position"])
         action["delta_orientation"].append(save_action["delta"]["orientation"])
@@ -255,6 +275,7 @@ class DataCollector:
             action["abs_joints"].append(save_action["abs"]["joints"])
         
         action["gripper_control"].append(save_action["gripper_control"])
+        self.data_dict["action"]["timestamp"].append(action_timestamp)
     
     def update_data_dict(
         self,
