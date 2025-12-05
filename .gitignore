@@ -131,3 +131,4 @@ dmypy.json
 # ===================
 libfranka_*.zip
 dist/
+cameras_output/

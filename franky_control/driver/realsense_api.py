@@ -2,9 +2,9 @@ import numpy as np
 import pyrealsense2 as rs
 from collections import OrderedDict
 import os
-import argparse
 import threading
 import time
+from PIL import Image
 
 class RealsenseAPI:
     """Wrapper that implements boilerplate code for RealSense cameras
@@ -76,8 +76,17 @@ class RealsenseAPI:
         self._async_running = False
         
         # Warm start camera (realsense automatically adjusts brightness during initial frames)
-        for _ in range(warm_start):
-            self._get_frames()
+        # Also populate initial cache with valid frames
+        for i in range(warm_start):
+            framesets = self._get_frames()
+            # On last warm start iteration, populate the cache with valid frames
+            if i == warm_start - 1:
+                for cam_idx, frameset in enumerate(framesets):
+                    color_frame = frameset.get_color_frame()
+                    depth_frame = frameset.get_depth_frame()
+                    self._cached_rgb[cam_idx, :, :, :] = np.asanyarray(color_frame.get_data())
+                    self._cached_depth[cam_idx, :, :] = np.asanyarray(depth_frame.get_data())
+                self._cached_timestamp = time.time()
         
         # Start async capture if enabled
         if self.use_async:
@@ -396,11 +405,7 @@ class RealsenseAPI:
             pipe.stop()
         print("All camera streams closed.")
 
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--idx',type=str,required=True)
-    args = parser.parse_args()
     cams = RealsenseAPI()
 
     print(f"Num cameras: {cams.get_num_cameras()}")
@@ -430,10 +435,11 @@ if __name__ == "__main__":
 
     rgbd = cams.get_rgbd()
     rgb = cams.get_rgb()
-    from PIL import Image
-    image = Image.fromarray(rgb[0].astype(np.uint8)) # ,"RGB"
-    out_dir = f"pick_place_dice_evalpoints"
-    os.makedirs(out_dir,exist_ok=True)
-    image.save(f"{out_dir}/{args.idx}.jpg")
+    out_dir = "cameras_output"
+    os.makedirs(out_dir, exist_ok=True)
+
+    for cam_idx in range(cams.get_num_cameras()):
+        image = Image.fromarray(rgb[cam_idx].astype(np.uint8))
+        image.save(f"{out_dir}/camera_{cam_idx + 1}.jpg")
     
     cams.close()

@@ -29,7 +29,7 @@ class CameraDisplay:
     Supports keyboard controls for saving frames and adjusting camera parameters.
     """
     
-    def __init__(self, width=640, height=480, fps=30, save_dir="./camera_captures"):
+    def __init__(self, width=640, height=480, fps=30, save_dir="./cameras_output"):
         """
         Initialize camera display system.
         
