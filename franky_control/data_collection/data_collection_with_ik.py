@@ -33,8 +33,8 @@ from franky_control.kinematics.panda_ik_solver import create_sim_aligned_ik_solv
 @dataclass 
 class Args:
     """Data collection script arguments."""
-    task_name: str  # Task name for the dataset
-    instruction: str  # Instruction for data collection
+    task_name: str = "test" # Task name for the dataset
+    instruction: str  = "test" # Instruction for data collection
     robot_ip: str = FC.ROBOT_IP  # Robot IP address
     dataset_dir: str = FC.DEFAULT_DATASET_DIR  # Directory to save dataset
     min_action_steps: int = FC.MIN_EPISODE_STEPS  # Minimum action_steps for data collection
@@ -44,10 +44,10 @@ class Args:
     rot_scale: float = FC.DEFAULT_ROT_SCALE  # The scale of rotation action
     use_gpu_ik: bool = False  # Use GPU for IK solver
     verify_ik: bool = False  # Verify IK solution with FK (for debugging)
-    control_frequency: float = FC.VLA_CONTROL_FREQUENCY  # Control frequency in Hz
-    use_joint_filter: bool = False  # Use low-pass filter for joint commands
-    filter_alpha: float = 0.4  # Low-pass filter smoothing factor (0-1, lower=smoother)
-    use_space_mouse: bool = False  # Use SpaceMouse for control
+    control_frequency: float = FC.DEFAULT_CONTROL_FREQUENCY  # Control frequency in Hz
+    use_joint_filter: bool = False  # Use low-pass filter for joint commands (recommended for stability)
+    filter_alpha: float = 0.5  # Low-pass filter smoothing factor (0-1, lower=smoother, 0.3-0.5 recommended)
+    use_space_mouse: bool = True  # Use SpaceMouse for control
     use_cameras: bool = False  # Use RealSense cameras
     use_gripper: bool = True  # Use Franka gripper
 
@@ -69,10 +69,7 @@ class FrankyDataCollectionWithIK:
                 print("[WARNING] SpaceMouse not available, using dummy control")
                 self.space_mouse = None
             else:
-                self.space_mouse = SpaceMouse(
-                    vendor_id=FC.SPACEMOUSE_VENDOR_ID, 
-                    product_id=FC.SPACEMOUSE_PRODUCT_ID
-                )
+                self.space_mouse = SpaceMouse(vendor_id=FC.SPACEMOUSE_VENDOR_ID, product_id=FC.SPACEMOUSE_PRODUCT_ID)
         else:
             self.space_mouse = None
         
@@ -85,7 +82,7 @@ class FrankyDataCollectionWithIK:
         self.command_rotation = None
         self.control_frequency = args.control_frequency
         self.control_time_step = 1.0 / self.control_frequency
-        self.gripper_is_closed = False  # Simple open/close state tracking
+        self.last_gripper_state = 1.0  # Start with open
         self.init_time = time.time()
         
         # Initialize gripper controller if available
@@ -318,7 +315,7 @@ class FrankyDataCollectionWithIK:
                         "gripper_control": control_gripper  # Action: normalized 0-1
                     }
 
-                    # Collect data (gripper_width is auto-read from self.data_collector.gripper)
+                    # Collect data
                     self.data_collector.update_data_dict(
                         instruction=self.instruction,
                         action=save_action,
@@ -333,18 +330,18 @@ class FrankyDataCollectionWithIK:
                     # Update current joints for next IK warm start (use unfiltered for IK)
                     self.current_joints = target_joints
 
-                    # Control gripper: simple open/close based on control_gripper value
-                    # control_gripper < 0.5 -> close, control_gripper >= 0.5 -> open
-                    if self.gripper_controller is not None:
-                        should_close = control_gripper < 0.5
-                        if should_close != self.gripper_is_closed:
+                    # Control gripper (if available)
+                    if hasattr(self, 'gripper_controller') and self.gripper_controller is not None:
+                        if abs(control_gripper - self.last_gripper_state) > 0.02:
+                            gripper_width = 0.08 * control_gripper  # Scale to gripper range
                             try:
-                                if should_close:
-                                    self.gripper_controller.grasp(async_call=True, force=FC.GRIPPER_DEFAULT_FORCE, 
-                                                                  epsilon_inner=0.06, epsilon_outer=0.06)
+                                if control_gripper < 0.5:
+                                    # Close/grasp
+                                    self.gripper_controller.grasp(force=50.0, epsilon_inner=0.04, epsilon_outer=0.04, async_call=True)
                                 else:
-                                    self.gripper_controller.open(async_call=True)
-                                self.gripper_is_closed = should_close
+                                    # Open to specified width
+                                    self.gripper_controller.move(gripper_width, speed=0.12, async_call=True)
+                                self.last_gripper_state = control_gripper
                             except Exception as e:
                                 print(f"[WARNING] Gripper control failed: {e}")
 
@@ -487,13 +484,13 @@ def main(args: Args):
 
     # Move to home position
     print("[INFO] Moving to home position...")
-    home_motion = JointWaypointMotion([
-        JointWaypoint(FC.RESET_JOINTS)
-    ], relative_dynamics_factor=RelativeDynamicsFactor(
-        velocity=FC.DEFAULT_VELOCITY_FACTOR, 
-        acceleration=FC.DEFAULT_ACCELERATION_FACTOR, 
-        jerk=FC.DEFAULT_JERK_FACTOR
-    ))
+    home_motion = JointWaypointMotion([JointWaypoint(FC.RESET_JOINTS)], 
+        relative_dynamics_factor=RelativeDynamicsFactor(
+            velocity=FC.DEFAULT_VELOCITY_FACTOR, 
+            acceleration=FC.DEFAULT_ACCELERATION_FACTOR, 
+            jerk=FC.DEFAULT_JERK_FACTOR
+        )
+    )
     robot.move(home_motion)
 
     # Create data collection instance

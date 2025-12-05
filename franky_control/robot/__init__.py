@@ -19,6 +19,9 @@ from .constants import (
 
 __all__ = [
     'GripperController',
+    'BaseFrankyController',
+    'BaseArgs',
+    'IKController',
     'FrankaConstants',
     'FC',
     'get_home_joints',

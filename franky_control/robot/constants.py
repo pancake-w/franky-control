@@ -95,13 +95,13 @@ class FrankaConstants:
     DEFAULT_GLOBAL_DYNAMICS_FACTOR: float = 0.5
     """Default golbal scaling for vel, acc, jerk (0-1)"""
     
-    DEFAULT_VELOCITY_FACTOR: float = 0.15
+    DEFAULT_VELOCITY_FACTOR: float = 0.18
     """Default velocity scaling factor (0-1)."""
     
-    DEFAULT_ACCELERATION_FACTOR: float = 0.1
+    DEFAULT_ACCELERATION_FACTOR: float = 0.13
     """Default acceleration scaling factor (0-1)."""
     
-    DEFAULT_JERK_FACTOR: float = 0.1
+    DEFAULT_JERK_FACTOR: float = 0.11
     """Default jerk scaling factor (0-1)."""
     
     # ==================== Control Parameters ====================

@@ -131,6 +131,12 @@ See the files in [data collection](./franky_control/data_collection/__init__.py)
 
 Full example with all parameters:
 
+
+```bash
+python franky_control/data_collection/data_collection_highfreq.py --task_name test_debug3 --use_cameras --use_gripper --min_action_steps 30
+```
+
+
 ```bash
 python -m franky_control.data_collection.data_collection_with_ik \
     --task_name "assembly_task" \

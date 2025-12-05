@@ -83,7 +83,7 @@ class DataCollector:
     
     def __init__(
         self,
-        robot: Robot,
+        robot: Robot = None,
         cameras=None,
         gripper=None,
         is_image_encoded: bool = True,
@@ -92,7 +92,7 @@ class DataCollector:
         """Initialize data collector.
         
         Args:
-            robot: franky.Robot instance
+            robot: franky.Robot instance (optional for external state mode)
             cameras: Camera wrapper (RealsenseAPI or similar)
             gripper: GripperController for reading gripper width
             is_image_encoded: If True, store images as JPEG bytes (saves space)
@@ -175,6 +175,61 @@ class DataCollector:
             return [encode_image_jpeg(images[i], self.jpeg_quality) 
                     for i in range(images.shape[0])]
     
+    def record_observation_with_images(
+        self,
+        instruction: str = "",
+        images: np.ndarray = None,
+        depth: np.ndarray = None,
+    ):
+        """Record observation with pre-fetched images (no camera access).
+        
+        This is faster than record_observation() when images are pre-fetched
+        outside the critical control path.
+        
+        Args:
+            instruction: Task instruction string
+            images: Pre-fetched RGB images [num_cams, H, W, 3]
+            depth: Pre-fetched depth images [num_cams, H, W]
+        """
+        timestamp = time.time()
+        
+        # Use provided images or fallback to zeros
+        if images is not None:
+            # Store raw concatenated image for video recording
+            if len(images) >= 2:
+                self.record_images.append(np.concatenate(images, axis=1))
+            elif len(images) > 0:
+                self.record_images.append(images[0])
+            
+            # Encode images if needed
+            images_to_store = self._encode_images(images)
+        else:
+            images_to_store = np.zeros((1, 480, 640, 3), dtype=np.uint8)
+        
+        if depth is None:
+            depth = np.zeros((1, 480, 640), dtype=np.float32)
+        
+        # Get robot state
+        ee_affine = self.robot.current_pose.end_effector_pose
+        joints = np.array(self.robot.current_joint_state.position)
+        gripper_width = self.gripper.width if self.gripper else 0.08
+        
+        # Store observation data
+        self.data["observation"]["rgb"].append(images_to_store)
+        self.data["observation"]["rgb_timestamp"].append(timestamp)
+        self.data["observation"]["depth"].append(depth)
+        self.data["observation"]["depth_timestamp"].append(timestamp)
+        
+        # Store state data
+        self.data["state"]["end_effector"]["position"].append(np.array(ee_affine.translation))
+        self.data["state"]["end_effector"]["orientation"].append(np.array(ee_affine.quaternion))
+        self.data["state"]["end_effector"]["gripper_width"].append(gripper_width)
+        self.data["state"]["joint"]["position"].append(joints)
+        self.data["state"]["timestamp"].append(timestamp)
+        
+        # Store task info
+        self.data["task_info"]["instruction"].append(instruction)
+    
     def record_observation(self, instruction: str = ""):
         """Record current observation (images, robot state).
         
@@ -221,6 +276,70 @@ class DataCollector:
         # Store task info
         self.data["task_info"]["instruction"].append(instruction)
     
+    def record_observation_external(
+        self,
+        instruction: str = "",
+        ee_position: np.ndarray = None,
+        ee_orientation: np.ndarray = None,
+        joints: np.ndarray = None,
+        gripper_width: float = 0.08,
+        timestamp: float = None,
+    ):
+        """Record observation with externally provided robot state.
+        
+        Use this method when robot state comes from a separate process
+        (e.g., multiprocessing architecture).
+        
+        Args:
+            instruction: Task instruction string
+            ee_position: End-effector position [3]
+            ee_orientation: End-effector orientation as quaternion [4] (w, x, y, z)
+            joints: Joint positions [7]
+            gripper_width: Gripper width in meters
+            timestamp: Optional timestamp (uses time.time() if None)
+        """
+        if timestamp is None:
+            timestamp = time.time()
+        
+        # Get camera images
+        if self.cameras is not None:
+            images = self.cameras.get_rgb()  # [num_cams, H, W, 3]
+            depth = self.cameras.get_depth()  # [num_cams, H, W]
+            
+            # Store raw concatenated image for video recording
+            if len(images) >= 2:
+                self.record_images.append(np.concatenate(images, axis=1))
+            elif len(images) > 0:
+                self.record_images.append(images[0])
+            
+            # Encode images if needed
+            images_to_store = self._encode_images(images)
+        else:
+            images_to_store = [np.zeros((100,), dtype=np.uint8)]  # Placeholder
+            depth = np.zeros((1, 480, 640), dtype=np.float32)
+        
+        # Store observation data
+        self.data["observation"]["rgb"].append(images_to_store)
+        self.data["observation"]["rgb_timestamp"].append(timestamp)
+        self.data["observation"]["depth"].append(depth)
+        self.data["observation"]["depth_timestamp"].append(timestamp)
+        
+        # Store state data (from external source)
+        self.data["state"]["end_effector"]["position"].append(
+            ee_position.copy() if ee_position is not None else np.zeros(3)
+        )
+        self.data["state"]["end_effector"]["orientation"].append(
+            ee_orientation.copy() if ee_orientation is not None else np.array([1.0, 0.0, 0.0, 0.0])
+        )
+        self.data["state"]["end_effector"]["gripper_width"].append(gripper_width)
+        self.data["state"]["joint"]["position"].append(
+            joints.copy() if joints is not None else np.zeros(7)
+        )
+        self.data["state"]["timestamp"].append(timestamp)
+        
+        # Store task info
+        self.data["task_info"]["instruction"].append(instruction)
+    
     def record_action(
         self,
         delta_xyz: np.ndarray,
@@ -256,6 +375,12 @@ class DataCollector:
         
         if abs_joints is not None:
             action["abs_joints"].append(abs_joints.copy())
+        
+        # Also store joint action
+        self.data["action"]["joint"]["position"].append(
+            abs_joints.copy() if abs_joints is not None else np.zeros(7)
+        )
+        self.data["action"]["joint"]["gripper_control"].append(gripper_control)
         
         self.data["action"]["timestamp"].append(action_timestamp)
     
@@ -345,9 +470,42 @@ class DataCollector:
     def _save_numpy(self, data_np: Dict, episode_dir: str, compressed: bool):
         """Save data as numpy format."""
         data_path = os.path.join(episode_dir, "data")
+        
+        # Flatten the dictionary
+        flat_data = self._flatten_dict(data_np)
+        
+        # Process each field to ensure it can be saved
+        processed_data = {}
+        for k, v in flat_data.items():
+            if isinstance(v, list):
+                # Check if it's a list of lists (e.g., encoded images)
+                if len(v) > 0 and isinstance(v[0], list):
+                    # Save as object array with pickle
+                    processed_data[k] = np.array(v, dtype=object)
+                elif len(v) > 0 and isinstance(v[0], np.ndarray):
+                    # Try to stack, fall back to object array
+                    try:
+                        processed_data[k] = np.stack(v)
+                    except ValueError:
+                        processed_data[k] = np.array(v, dtype=object)
+                else:
+                    try:
+                        processed_data[k] = np.array(v)
+                    except ValueError:
+                        processed_data[k] = np.array(v, dtype=object)
+            else:
+                processed_data[k] = v
+        
         if compressed:
-            np.savez_compressed(data_path, **{k: v for k, v in self._flatten_dict(data_np).items()})
-            print(f"Saved data to {data_path}.npz")
+            # Note: savez_compressed doesn't support object arrays well,
+            # so we use savez for mixed data
+            try:
+                np.savez_compressed(data_path, **processed_data)
+                print(f"Saved data to {data_path}.npz")
+            except Exception as e:
+                print(f"[WARNING] savez_compressed failed: {e}, using pickle save")
+                np.save(data_path + ".npy", data_np, allow_pickle=True)
+                print(f"Saved data to {data_path}.npy (with pickle)")
         else:
             np.save(data_path + ".npy", data_np, allow_pickle=True)
             print(f"Saved data to {data_path}.npy")
@@ -370,23 +528,62 @@ class DataCollector:
                 group = h5_group.create_group(key)
                 self._save_dict_to_hdf5(group, value, current_path)
             elif isinstance(value, list):
-                # Handle list of varying-length arrays (e.g., encoded images)
-                if len(value) > 0 and isinstance(value[0], np.ndarray):
+                if len(value) == 0:
+                    # Empty list, create empty dataset
+                    h5_group.create_dataset(key, data=np.array([]))
+                    continue
+                
+                first_elem = value[0]
+                
+                # Handle list of lists (e.g., rgb images from multiple cameras)
+                if isinstance(first_elem, list):
+                    # Check if it's encoded images (list of list of np.ndarray)
+                    if len(first_elem) > 0 and isinstance(first_elem[0], np.ndarray):
+                        if self.is_image_encoded and "rgb" in current_path:
+                            # Encoded images: concatenate all cameras per timestep
+                            dt = h5py.special_dtype(vlen=np.uint8)
+                            dset = h5_group.create_dataset(key, (len(value),), dtype=dt)
+                            for i, img_list in enumerate(value):
+                                if len(img_list) > 1:
+                                    dset[i] = np.concatenate(img_list)
+                                elif len(img_list) == 1:
+                                    dset[i] = img_list[0]
+                                else:
+                                    dset[i] = np.array([], dtype=np.uint8)
+                        else:
+                            # Non-encoded multi-camera images: stack
+                            try:
+                                arr = np.array(value)  # [T, num_cams, H, W, C]
+                                h5_group.create_dataset(key, data=arr, compression="gzip")
+                            except ValueError:
+                                # Variable shapes, save per-timestep
+                                dt = h5py.special_dtype(vlen=np.uint8)
+                                dset = h5_group.create_dataset(key, (len(value),), dtype=dt)
+                                for i, img_list in enumerate(value):
+                                    dset[i] = np.concatenate([img.flatten() for img in img_list])
+                    else:
+                        # List of empty lists or other types
+                        h5_group.create_dataset(key, data=np.array([]))
+                        
+                elif isinstance(first_elem, np.ndarray):
                     if self.is_image_encoded and "rgb" in current_path:
                         # Variable-length encoded images: use special dtype
                         dt = h5py.special_dtype(vlen=np.uint8)
                         dset = h5_group.create_dataset(key, (len(value),), dtype=dt)
                         for i, img in enumerate(value):
-                            if isinstance(img, list):
-                                # Multiple cameras: flatten to single bytes
-                                dset[i] = np.concatenate(img)
-                            else:
-                                dset[i] = img
+                            dset[i] = img
                     else:
                         # Fixed-size arrays: stack and save
                         try:
                             arr = np.stack(value)
-                            h5_group.create_dataset(key, data=arr, compression="gzip")
+                            # Check if stacked array is string type
+                            if arr.dtype.kind in ('U', 'O', 'S'):
+                                dt = h5py.special_dtype(vlen=str)
+                                dset = h5_group.create_dataset(key, arr.shape, dtype=dt)
+                                for idx in np.ndindex(arr.shape):
+                                    dset[idx] = str(arr[idx]) if arr[idx] is not None else ""
+                            else:
+                                h5_group.create_dataset(key, data=arr, compression="gzip")
                         except ValueError:
                             # Variable shapes, save as object
                             dt = h5py.special_dtype(vlen=np.float32)
@@ -395,18 +592,34 @@ class DataCollector:
                                 dset[i] = v.flatten()
                 else:
                     # List of scalars or strings
-                    arr = np.array(value)
-                    if arr.dtype.kind == 'U':
-                        # String array
-                        dt = h5py.special_dtype(vlen=str)
-                        dset = h5_group.create_dataset(key, (len(value),), dtype=dt)
-                        for i, s in enumerate(value):
-                            dset[i] = s
-                    else:
-                        h5_group.create_dataset(key, data=arr, compression="gzip")
+                    try:
+                        arr = np.array(value)
+                        if arr.dtype.kind in ('U', 'O', 'S'):
+                            # String array (Unicode, Object, or byte string)
+                            dt = h5py.special_dtype(vlen=str)
+                            dset = h5_group.create_dataset(key, (len(value),), dtype=dt)
+                            for i, s in enumerate(value):
+                                dset[i] = str(s) if s is not None else ""
+                        else:
+                            h5_group.create_dataset(key, data=arr, compression="gzip")
+                    except ValueError as e:
+                        print(f"[WARNING] Cannot save {current_path}: {e}")
+                        h5_group.create_dataset(key, data=np.array([]))
+            elif isinstance(value, str):
+                # Single string value
+                dt = h5py.special_dtype(vlen=str)
+                dset = h5_group.create_dataset(key, (1,), dtype=dt)
+                dset[0] = value
             else:
                 # Scalar or single array
-                h5_group.create_dataset(key, data=value)
+                if isinstance(value, np.ndarray) and value.dtype.kind in ('U', 'O', 'S'):
+                    # String array
+                    dt = h5py.special_dtype(vlen=str)
+                    dset = h5_group.create_dataset(key, value.shape, dtype=dt)
+                    for idx in np.ndindex(value.shape):
+                        dset[idx] = str(value[idx]) if value[idx] is not None else ""
+                else:
+                    h5_group.create_dataset(key, data=value)
     
     def _flatten_dict(self, d: Dict, parent_key: str = '', sep: str = '/') -> Dict:
         """Flatten nested dictionary."""
