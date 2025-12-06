@@ -125,10 +125,12 @@ class DataCollector:
                     "abs_euler": [],
                     "abs_joints": [],
                     "gripper_control": [],
+                    "gripper_width": [],
                 },
                 "joint": {
                     "position": [],
                     "gripper_control": [],
+                    "gripper_width": [],
                 },
                 "timestamp": [],
             },
@@ -349,6 +351,7 @@ class DataCollector:
         abs_rotation: np.ndarray,
         gripper_control: float,
         abs_joints: Optional[np.ndarray] = None,
+        gripper_width: Optional[float] = None,
         timestamp: Optional[float] = None,
     ):
         """Record action data.
@@ -361,9 +364,14 @@ class DataCollector:
             abs_rotation: Absolute rotation matrix [3,3]
             gripper_control: Gripper action (0=close, 1=open)
             abs_joints: Absolute joint positions [7] (for IK-based control)
+            gripper_width: Gripper width in meters (physical value)
             timestamp: Optional timestamp for the action (uses time.time() if None)
         """
         action_timestamp = time.time() if timestamp is None else timestamp
+        
+        # Use provided gripper_width or default to 0 for closed, 0.08 for open
+        if gripper_width is None:
+            gripper_width = 0.0 if gripper_control < 0.5 else 0.08
         
         action = self.data["action"]["end_effector"]
         action["delta_position"].append(delta_xyz.copy())
@@ -372,6 +380,7 @@ class DataCollector:
         action["abs_position"].append(abs_position.copy())
         action["abs_euler"].append(np.array(mat2euler(abs_rotation, 'sxyz')))
         action["gripper_control"].append(gripper_control)
+        action["gripper_width"].append(gripper_width)
         
         if abs_joints is not None:
             action["abs_joints"].append(abs_joints.copy())
@@ -381,6 +390,7 @@ class DataCollector:
             abs_joints.copy() if abs_joints is not None else np.zeros(7)
         )
         self.data["action"]["joint"]["gripper_control"].append(gripper_control)
+        self.data["action"]["joint"]["gripper_width"].append(gripper_width)
         
         self.data["action"]["timestamp"].append(action_timestamp)
     

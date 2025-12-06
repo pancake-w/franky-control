@@ -232,9 +232,12 @@ def robot_control_process(robot_ip: str, command_queue: Queue, state_queue: Queu
             
             # Send state update periodically
             try:
+                ee_pose = robot.current_pose.end_effector_pose
                 state_queue.put_nowait({
                     'joints': list(robot.current_joint_positions),
                     'gripper_width': gripper.width if gripper else 0.04,
+                    'ee_position': list(ee_pose.translation),
+                    'ee_orientation': list(ee_pose.quaternion),  # [w, x, y, z]
                     'error_count': error_count,
                 })
             except:
@@ -279,6 +282,7 @@ class HighFreqDataCollection:
         self.filtered_joints = None
         self.gripper_is_closed = False
         self.init_time = time.time()
+        self.last_state = None  # latest robot state from control process
         
         # Joint filtering
         self.use_joint_filter = args.use_joint_filter
@@ -531,6 +535,7 @@ class HighFreqDataCollection:
                 try:
                     while not self.state_queue.empty():
                         state = self.state_queue.get_nowait()
+                        self.last_state = state
                         self.current_joints = np.array(state['joints'])
                 except:
                     pass
@@ -538,17 +543,37 @@ class HighFreqDataCollection:
                 # Update current joints for IK warm start
                 self.current_joints = target_joints
                 
-                # Record observation using external state (robot is in another process)
-                # We use command_xyz/rotation as EE pose since we don't have real robot state here
-                ee_quat = mat2quat(self.command_rotation)  # [w, x, y, z]
-                gripper_width = 0.04 if control_gripper < 0.5 else 0.08
+                # Ensure we have a real robot state; fetch once if missing
+                if self.last_state is None:
+                    try:
+                        self.last_state = self.state_queue.get(timeout=0.02)
+                        self.current_joints = np.array(self.last_state['joints'])
+                    except Exception:
+                        pass
+
+                if self.last_state is None:
+                    print("[WARNING] No robot state available yet, skipping observation this step")
+                    # Still count action to preserve timing, but skip observation recording
+                    self.action_steps += 1
+                    processing_times.append(time.time() - loop_start_time)
+                    elapsed = time.time() - loop_start_time
+                    remaining = self.control_time_step - elapsed
+                    if remaining > 0:
+                        time.sleep(remaining)
+                    continue
+
+                # Extract real robot state (no .get(), fail if key missing)
+                ee_pos_obs = np.array(self.last_state['ee_position'])
+                ee_quat_obs = np.array(self.last_state['ee_orientation'])
+                joints_obs = np.array(self.last_state['joints'])
+                gripper_width_obs = float(self.last_state['gripper_width'])
                 
                 self.data_collector.record_observation_external(
                     instruction=self.args.instruction,
-                    ee_position=self.command_xyz,
-                    ee_orientation=ee_quat,
-                    joints=filtered_target_joints,
-                    gripper_width=gripper_width,
+                    ee_position=ee_pos_obs,
+                    ee_orientation=ee_quat_obs,
+                    joints=joints_obs,
+                    gripper_width=gripper_width_obs,
                 )
                 
                 # Record action
@@ -561,6 +586,7 @@ class HighFreqDataCollection:
                     abs_rotation=self.command_rotation,
                     gripper_control=control_gripper,
                     abs_joints=filtered_target_joints,
+                    gripper_width=gripper_width_obs,
                 )
 
                 self.action_steps += 1
@@ -660,7 +686,7 @@ def main(args: Args):
         task_dir = os.path.join(args.dataset_dir, args.task_name)
         ensure_dir(task_dir)
         
-        # Save data using DataCollector's save method
+        # Save data using DataCollector's save method (use .npy format)
         episode_dir = collection.data_collector.save(
             save_dir=task_dir,
             episode_idx=args.episode_idx,
@@ -670,7 +696,8 @@ def main(args: Args):
                 "steps": collection.action_steps,
                 "control_frequency": args.control_frequency,
             },
-            use_hdf5=True,
+            use_hdf5=False,
+            compressed=False,  # Use .npy instead of .npz
             save_video=True,
         )
         print(f"\033[32m[SUCCESS] Saved {collection.action_steps} steps to {episode_dir}\033[0m")
