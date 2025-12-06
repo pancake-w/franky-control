@@ -17,6 +17,7 @@ sys.path = [p for p in sys.path if not any(x in p for x in ['/opt/ros', 'franka_
 import time
 import json
 import copy
+import traceback
 import numpy as np
 import tyro
 from dataclasses import dataclass
@@ -34,6 +35,8 @@ from franky_control.utils import get_next_episode_idx, ensure_dir
 from franky_control.kinematics import PANDA_URDF_PATH, ensure_assets_downloaded
 from franky_control.kinematics.panda_ik_solver import create_sim_aligned_ik_solver, SimPose
 
+# Import franky modules
+from franky import Robot, JointWaypointMotion, JointWaypoint, RelativeDynamicsFactor, Gripper
 
 @dataclass 
 class Args:
@@ -64,9 +67,7 @@ def robot_control_process(robot_ip: str, command_queue: Queue, state_queue: Queu
     This runs in isolation from the main Python process to avoid
     being preempted by franky's real-time control thread.
     """
-    import traceback
     try:
-        from franky import Robot, JointWaypointMotion, JointWaypoint, RelativeDynamicsFactor, Gripper, RobotState
         
         print("[Control Process] Connecting to robot...")
         robot = Robot(robot_ip)
@@ -112,67 +113,94 @@ def robot_control_process(robot_ip: str, command_queue: Queue, state_queue: Queu
         error_count = 0
         last_error_time = 0
         loop_count = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 100
         
         while running.value:
             loop_count += 1
             if loop_count % 100 == 1:
                 print(f"[Control Process] Loop #{loop_count}, cmd_count={cmd_count}, queue_size~={command_queue.qsize()}")
             
-            try:
-                # Get joint command (non-blocking with short timeout)
-                # Process commands FIRST, check robot state less frequently
+            # Check robot state more frequently (every 10 loops) for faster error detection
+            if loop_count % 10 == 0:
                 try:
-                    target_joints = command_queue.get(timeout=0.001)
-                    cmd_count += 1
-                    
-                    # Debug: print every 50 commands
-                    if cmd_count % 50 == 0:
-                        print(f"[Control Process] Received cmd #{cmd_count}, joints[:3]={target_joints[:3]}")
-                    
-                    motion = JointWaypointMotion(
-                        [JointWaypoint(target_joints)],
-                        relative_dynamics_factor=dynamics,
-                        return_when_finished=False,
-                    )
-                    robot.move(motion, asynchronous=True)
-                except:
-                    pass  # Queue empty, continue
-                
-                # Check robot state less frequently (every 100 loops)
-                if loop_count % 100 == 0:
                     robot_state = robot.state
-                    if robot_state == RobotState.UserStopped:
-                        print("[Control Process] Robot user stopped, recovering...")
-                        robot.recover_from_errors()
-                        error_count += 1
-                    elif hasattr(robot_state, 'name') and 'Reflex' in str(robot_state):
-                        import time
+                    # franky.Errors is non-iterable; rely on string repr '[]' when empty
+                    raw_errors = getattr(robot_state, "current_errors", None)
+                    errors_str = str(raw_errors) if raw_errors is not None else "[]"
+                    has_errors = errors_str not in ("[]", "None", "")
+
+                    if has_errors:
                         current_time = time.time()
                         if current_time - last_error_time > 0.5:
-                            print(f"[Control Process] Robot in reflex state: {robot_state}, recovering...")
+                            print(f"[Control Process] Robot has errors: {errors_str}, recovering...")
                             last_error_time = current_time
-                        robot.recover_from_errors()
-                        error_count += 1
-                        current_joints = list(robot.current_joint_positions)
-                        motion = JointWaypointMotion(
-                            [JointWaypoint(current_joints)],
-                            relative_dynamics_factor=dynamics,
-                            return_when_finished=False,
-                        )
-                        robot.move(motion, asynchronous=True)
+                            
+                            # Attempt recovery
+                            robot.recover_from_errors()
+                            error_count += 1
+                            consecutive_errors += 1
+                            
+                            if consecutive_errors >= max_consecutive_errors:
+                                print(f"[Control Process] Too many consecutive errors ({consecutive_errors}), may need manual intervention")
+                            
+                            # Get current position and restart motion
+                            current_joints = list(robot.current_joint_positions)
+                            motion = JointWaypointMotion(
+                                [JointWaypoint(current_joints)],
+                                relative_dynamics_factor=dynamics,
+                                return_when_finished=False,
+                            )
+                            robot.move(motion, asynchronous=True)
+                            print("[Control Process] Motion restarted after recovery")
+                            
+                            # Skip command processing this iteration
+                            continue
+                    else:
+                        # Reset consecutive error counter on successful state check
+                        consecutive_errors = 0
+                except Exception as state_err:
+                    # State check failed, try to continue
+                    print(f"[Control Process] State check error: {state_err}")
+            
+            # Get joint command (non-blocking with short timeout)
+            try:
+                target_joints = command_queue.get(timeout=0.001)
+                cmd_count += 1
                 
-            except Exception as e:
+                # Debug: print every 50 commands
+                if cmd_count % 50 == 0:
+                    print(f"[Control Process] Received cmd #{cmd_count}, joints[:3]={target_joints[:3]}")
+                
+                # Send motion command
+                motion = JointWaypointMotion(
+                    [JointWaypoint(target_joints)],
+                    relative_dynamics_factor=dynamics,
+                    return_when_finished=False,
+                )
+                robot.move(motion, asynchronous=True)
+                
+                # Reset consecutive error counter on successful move
+                consecutive_errors = 0
+                
+            except Exception as move_err:
                 # Check if it's a control exception
-                if "ControlException" in str(type(e).__name__) or "reflex" in str(e).lower():
+                if "ControlException" in str(type(move_err).__name__) or \
+                   "reflex" in str(move_err).lower() or \
+                   "control" in str(move_err).lower():
                     import time
                     current_time = time.time()
                     if current_time - last_error_time > 0.5:
-                        print(f"[Control Process] Motion error: {e}")
+                        print(f"[Control Process] Motion error: {move_err}, attempting recovery...")
                         last_error_time = current_time
+                    
                     try:
+                        # Recover from error
                         robot.recover_from_errors()
                         error_count += 1
-                        # Restart motion
+                        consecutive_errors += 1
+                        
+                        # Restart motion at current position
                         current_joints = list(robot.current_joint_positions)
                         motion = JointWaypointMotion(
                             [JointWaypoint(current_joints)],
@@ -180,11 +208,13 @@ def robot_control_process(robot_ip: str, command_queue: Queue, state_queue: Queu
                             return_when_finished=False,
                         )
                         robot.move(motion, asynchronous=True)
-                    except:
-                        pass
-                # Queue empty is expected, ignore silently
-                elif "Empty" not in str(type(e).__name__):
-                    pass  # Other exceptions, ignore
+                        print("[Control Process] Recovered and restarted motion")
+                    except Exception as recovery_err:
+                        print(f"[Control Process] Recovery failed: {recovery_err}")
+                        consecutive_errors += 1
+                elif "Empty" not in str(type(move_err).__name__):
+                    # Other non-empty queue exceptions
+                    pass
             
             # Handle gripper commands
             if gripper is not None and gripper_queue is not None:
